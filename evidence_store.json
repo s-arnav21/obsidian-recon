@@ -1,0 +1,42 @@
+[
+  {
+    "finding_id": "f-001",
+    "template_id": "dvwa-sqli-low",
+    "validator": "auto",
+    "timestamp": "2026-08-12T07:59:11.439341+00:00",
+    "status": "not_exploitable",
+    "method": "boolean-based SQLi, id parameter",
+    "evidence": {
+      "baseline_length": 22,
+      "injected_length": 22
+    }
+  },
+  {
+    "finding_id": "f-001",
+    "template_id": "dvwa-sqli-low",
+    "validator": "auto",
+    "timestamp": "2026-08-12T08:10:56.401303+00:00",
+    "status": "not_exploitable",
+    "method": "boolean-based SQLi, id parameter",
+    "evidence": {
+      "url": "http://127.0.0.1:8080/vulnerabilities/sqli/",
+      "baseline_length": 4538,
+      "injected_length": 4826
+    }
+  },
+  {
+    "finding_id": "f-001",
+    "template_id": "dvwa-sqli-low",
+    "validator": "auto",
+    "timestamp": "2026-08-12T08:14:55.588900+00:00",
+    "status": "confirmed",
+    "method": "boolean-based SQLi, id parameter",
+    "evidence": {
+      "url": "http://127.0.0.1:8080/vulnerabilities/sqli/",
+      "baseline_rows": 2,
+      "injected_rows": 6,
+      "baseline_length": 4538,
+      "injected_length": 4826
+    }
+  }
+]

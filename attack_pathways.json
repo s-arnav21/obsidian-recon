@@ -1,0 +1,29 @@
+[
+  {
+    "steps": [
+      "unauthenticated -> unconfirmed_capability (via f-002, manual_pending)"
+    ],
+    "classification": "theoretical_chain",
+    "finding_ids": [
+      "f-002"
+    ]
+  },
+  {
+    "steps": [
+      "unauthenticated -> unconfirmed_capability (via f-002, manual_pending)"
+    ],
+    "classification": "theoretical_chain",
+    "finding_ids": [
+      "f-002"
+    ]
+  },
+  {
+    "steps": [
+      "unauthenticated -> unconfirmed_capability (via f-002, manual_pending)"
+    ],
+    "classification": "theoretical_chain",
+    "finding_ids": [
+      "f-002"
+    ]
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "f-002",
+    "target": "http://127.0.0.1:8000",
+    "port": 80,
+    "template_id": "dvwa-idor",
+    "cve": null,
+    "confidence": "medium",
+    "queued_at": "2026-08-12T07:59:11.472965+00:00",
+    "reason": "no_registered_handler"
+  },
+  {
+    "id": "f-002",
+    "target": "http://127.0.0.1:8080",
+    "port": 80,
+    "template_id": "dvwa-idor",
+    "cve": null,
+    "confidence": "medium",
+    "queued_at": "2026-08-12T08:10:56.441762+00:00",
+    "reason": "no_registered_handler"
+  },
+  {
+    "id": "f-002",
+    "target": "http://127.0.0.1:8080",
+    "port": 80,
+    "template_id": "dvwa-idor",
+    "cve": null,
+    "confidence": "medium",
+    "queued_at": "2026-08-12T08:14:55.599698+00:00",
+    "reason": "no_registered_handler"
+  }
+]
