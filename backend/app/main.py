@@ -4,12 +4,14 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.scans import router as scans_router
 from app.api.test_harness import router as test_harness_router
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="Obsidian Recon API")
+app.include_router(scans_router)
 app.include_router(test_harness_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
