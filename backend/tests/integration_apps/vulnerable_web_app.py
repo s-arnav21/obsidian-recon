@@ -6,10 +6,18 @@ import socket
 import threading
 import time
 from typing import Optional
+from urllib.parse import parse_qs
 
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
+
+from app.validation.command_execution import (
+    BASELINE_DIAGNOSTIC_TOKEN,
+    CONTROL_PROBE_TOKEN,
+    EXECUTION_MARKER,
+    EXECUTION_PROBE_TOKEN,
+)
 
 
 app = FastAPI(title="Obsidian Recon Local Integration Fixture")
@@ -58,6 +66,20 @@ def search(q: str) -> HTMLResponse:
 def debug_config() -> PlainTextResponse:
     """Return static synthetic classifier data; never read host environment."""
     return PlainTextResponse(SYNTHETIC_EXPOSURE_BODY)
+
+
+@app.post("/admin/diagnostics", response_class=PlainTextResponse)
+async def admin_diagnostics(request: Request) -> PlainTextResponse:
+    """Interpret fixed synthetic tokens without invoking an operating system."""
+    body = (await request.body()).decode("utf-8", errors="replace")
+    diagnostic_token = parse_qs(body).get("diagnostic_token", [""])[0]
+    if diagnostic_token == EXECUTION_PROBE_TOKEN:
+        return PlainTextResponse(f"synthetic result: {EXECUTION_MARKER}")
+    if diagnostic_token == BASELINE_DIAGNOSTIC_TOKEN:
+        return PlainTextResponse("synthetic diagnostics ready")
+    if diagnostic_token == CONTROL_PROBE_TOKEN:
+        return PlainTextResponse("synthetic diagnostic control rejected")
+    return PlainTextResponse("unsupported synthetic diagnostic token")
 
 
 class LocalVulnerableAppServer:

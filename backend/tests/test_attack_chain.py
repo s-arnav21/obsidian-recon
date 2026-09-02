@@ -88,6 +88,16 @@ def make_repository_access(**overrides):
     return make_finding(**values)
 
 
+def make_command_execution(**overrides):
+    values = {
+        "finding_id": "f-command-execution",
+        "vulnerability_type": "command_execution",
+        "evidence_refs": ["evidence://command-execution"],
+    }
+    values.update(overrides)
+    return make_finding(**values)
+
+
 class TestConfirmedChain(unittest.TestCase):
 
     def test_produces_confirmed_chain(self):
@@ -165,6 +175,104 @@ class TestRejectedFindings(unittest.TestCase):
             ),
         ])
         self.assertEqual(chains, [])
+
+
+class TestUnixShellProgression(unittest.TestCase):
+
+    def test_confirmed_t1190_unlocks_confirmed_t1059_004(self):
+        chain = build_attack_paths([
+            make_scan(),
+            make_sqli(),
+            make_command_execution(),
+        ])[0]
+
+        self.assertEqual(
+            [step.finding_id for step in chain.steps],
+            ["f-scan", "f-sqli", "f-command-execution"],
+        )
+        self.assertEqual(chain.mitre_techniques, ["T1190", "T1059.004"])
+        self.assertEqual(chain.status, "confirmed")
+        self.assertIn("command_execution", chain.capabilities_gained)
+
+    def test_rejected_t1190_cannot_satisfy_command_prerequisite(self):
+        chains = build_attack_paths([
+            make_scan(),
+            make_sqli(
+                status=ValidationStatus.REJECTED,
+                confidence=0.0,
+            ),
+            make_command_execution(),
+        ])
+
+        self.assertFalse(any(
+            "T1059.004" in chain.mitre_techniques
+            for chain in chains
+        ))
+
+    def test_rejected_command_execution_never_enters_a_chain(self):
+        chains = build_attack_paths([
+            make_scan(),
+            make_sqli(),
+            make_command_execution(
+                status=ValidationStatus.REJECTED,
+                confidence=0.0,
+            ),
+        ])
+
+        self.assertEqual(len(chains), 1)
+        self.assertNotIn("T1059.004", chains[0].mitre_techniques)
+        self.assertNotIn(
+            "f-command-execution",
+            [step.finding_id for step in chains[0].steps],
+        )
+
+    def test_manual_review_command_execution_is_potential(self):
+        chain = build_attack_paths([
+            make_scan(),
+            make_sqli(),
+            make_command_execution(
+                status=ValidationStatus.MANUAL_REVIEW,
+                confidence=0.6,
+            ),
+        ])[0]
+
+        self.assertEqual(chain.status, "potential")
+        self.assertEqual(chain.mitre_techniques, ["T1190", "T1059.004"])
+
+    def test_command_prerequisite_is_scan_isolated(self):
+        chains = build_attack_paths([
+            make_scan(scan_id="scan-A"),
+            make_sqli(scan_id="scan-A"),
+            make_command_execution(scan_id="scan-B"),
+        ])
+
+        self.assertFalse(any(
+            "T1059.004" in chain.mitre_techniques
+            for chain in chains
+        ))
+
+    def test_command_prerequisite_is_asset_isolated(self):
+        chains = build_attack_paths([
+            make_scan(asset_id="asset-A"),
+            make_sqli(asset_id="asset-A"),
+            make_command_execution(asset_id="asset-B"),
+        ])
+
+        self.assertFalse(any(
+            "T1059.004" in chain.mitre_techniques
+            for chain in chains
+        ))
+
+    def test_three_step_chain_identity_and_order_are_stable(self):
+        findings = [make_scan(), make_sqli(), make_command_execution()]
+        first = build_attack_paths(findings)[0]
+        second = build_attack_paths(list(reversed(findings)))[0]
+
+        self.assertEqual(first.chain_id, second.chain_id)
+        self.assertEqual(
+            [step.finding_id for step in first.steps],
+            [step.finding_id for step in second.steps],
+        )
 
 
 class TestPotentialChains(unittest.TestCase):

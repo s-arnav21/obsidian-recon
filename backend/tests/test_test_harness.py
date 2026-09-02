@@ -572,12 +572,12 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
     def validation(self, name):
         return self.body["validations"][name]
 
-    def test_new_scenario_is_accepted_and_returns_three_findings(self):
+    def test_scenario_is_accepted_and_returns_four_findings(self):
         self.assertEqual(self.response.status_code, 200)
         self.assertEqual(self.body["scenario"], GENERIC_LOCAL_WEB_SCENARIO)
         self.assertEqual(self.body["mode"], "live_loopback_fixture")
-        self.assertEqual(len(self.body["findings"]), 3)
-        self.assertEqual(len(self.body["validations"]), 3)
+        self.assertEqual(len(self.body["findings"]), 4)
+        self.assertEqual(len(self.body["validations"]), 4)
 
     def test_sqli_is_confirmed_and_mapped_to_t1190(self):
         result = self.validation("sql_injection")
@@ -618,12 +618,36 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
             ["potential_information_exposure"],
         )
 
+    def test_command_execution_is_confirmed_and_mapped(self):
+        result = self.validation("command_execution")
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "generic_http_command_execution",
+        )
+        self.assertEqual(
+            result["finding"]["mitre_technique_id"],
+            "T1059.004",
+        )
+
     def test_attack_chains_and_steps_are_serialized(self):
         chain_result = self.body["chain_result"]
         self.assertEqual(chain_result["status"], "confirmed")
         self.assertEqual(len(chain_result["chains"]), 3)
         self.assertTrue(all(chain["steps"] for chain in chain_result["chains"]))
         self.assertEqual(chain_result["chains"], self.body["chains"])
+        progression = next(
+            chain for chain in chain_result["chains"]
+            if "T1059.004" in chain["mitre_techniques"]
+        )
+        self.assertEqual(
+            progression["mitre_techniques"],
+            ["T1190", "T1059.004"],
+        )
+        self.assertEqual(len(progression["steps"]), 3)
 
     def test_generic_api_response_schema_is_valid(self):
         self.assertEqual(

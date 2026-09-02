@@ -135,32 +135,89 @@ class HarnessPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(FindingORM)),
-                4,
+                5,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(ValidationORM)),
-                3,
+                4,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(EvidenceORM)),
-                3,
+                4,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(MitreMappingORM)),
-                1,
+                2,
             )
             repository = PersistenceRepository(session)
             findings = repository.list_findings_for_scan(scan_id)
             chains = repository.list_attack_chains_for_scan(scan_id)
             self.assertTrue(all(finding.scan_id == scan_id for finding in findings))
+            command_candidate = next(
+                finding for finding in findings
+                if finding.vulnerability_type == "command_execution"
+            )
+            self.assertEqual(
+                command_candidate.status,
+                ValidationStatus.DETECTED,
+            )
+            self.assertEqual(
+                command_candidate.validations[0].status,
+                ValidationStatus.CONFIRMED,
+            )
+            self.assertEqual(
+                command_candidate.mitre_mappings[0].technique_id,
+                "T1059.004",
+            )
+            self.assertTrue(
+                command_candidate.validations[0].evidence_records[0]
+                .evidence_json["execution_marker_present"]
+            )
             self.assertEqual(len(chains), 3)
             self.assertTrue(all(
                 [step.step_number for step in chain.steps]
                 == list(range(1, len(chain.steps) + 1))
                 for chain in chains
             ))
+            progression = next(
+                chain for chain in chains
+                if any(
+                    step.technique_id == "T1059.004"
+                    for step in chain.steps
+                )
+            )
+            self.assertEqual(
+                [step.technique_id for step in progression.steps],
+                [None, "T1190", "T1059.004"],
+            )
+            self.assertEqual(
+                progression.steps[-2].capability,
+                "application_compromise",
+            )
+            self.assertEqual(
+                progression.steps[-1].capability,
+                "command_execution",
+            )
         finally:
             session.close()
+
+        fetched_findings = self.client.get(f"/api/scans/{scan_id}/findings")
+        fetched_chains = self.client.get(f"/api/scans/{scan_id}/chains")
+        self.assertEqual(fetched_findings.status_code, 200)
+        self.assertEqual(fetched_chains.status_code, 200)
+        command_json = next(
+            finding for finding in fetched_findings.json()
+            if finding["vulnerability_type"] == "command_execution"
+        )
+        self.assertEqual(command_json["status"], ValidationStatus.DETECTED)
+        self.assertEqual(
+            command_json["validations"][0]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertTrue(any(
+            any(step["technique_id"] == "T1059.004" for step in chain["steps"])
+            for chain in fetched_chains.json()
+        ))
 
     def test_repeated_runs_remain_isolated(self):
         first = self.post_fixture().json()["scan_id"]

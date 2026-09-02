@@ -10,6 +10,7 @@ from app.scanning import normalizer
 from app.scanning.normalizer import (
     HttpScannerRecord,
     ScannerNormalizationError,
+    normalize_command_execution_record,
     normalize_http_sqli_record,
 )
 from app.validation.dispatcher import apply_validation_result, dispatch
@@ -59,7 +60,48 @@ def make_record(**overrides):
     return HttpScannerRecord(**values)
 
 
+def make_command_record(**overrides):
+    values = {
+        "record_id": "finding-scanner-command-execution",
+        "scan_id": "scan-scanner-command-execution",
+        "asset_id": "asset-scanner-command-execution",
+        "target": "http://127.0.0.1:8090",
+        "endpoint": "/admin/diagnostics",
+        "http_method": "post",
+        "parameter_name": "diagnostic_token",
+        "parameter_location": "form",
+        "scanner_name": "synthetic_http_scanner",
+        "scanner_template_id": "synthetic-command-execution-check",
+        "vulnerability_type": "Unix Shell Command Execution",
+        "severity": "critical",
+    }
+    values.update(overrides)
+    return HttpScannerRecord(**values)
+
+
 class TestHttpScannerNormalizer(unittest.TestCase):
+
+    def test_command_execution_record_uses_canonical_type_and_route(self):
+        finding = normalize_command_execution_record(make_command_record())
+
+        self.assertEqual(finding.vulnerability_type, "command_execution")
+        self.assertEqual(
+            finding.validator_id,
+            "generic-http-command-execution",
+        )
+        self.assertEqual(finding.http_method, "POST")
+        self.assertEqual(finding.parameter_location, "form")
+        self.assertEqual(finding.parameter_name, "diagnostic_token")
+
+    def test_command_execution_record_rejects_other_request_shapes(self):
+        with self.assertRaisesRegex(
+            ScannerNormalizationError,
+            "requires POST/form",
+        ):
+            normalize_command_execution_record(make_command_record(
+                http_method="GET",
+                parameter_location="query",
+            ))
 
     def test_record_normalizes_to_canonical_finding(self):
         finding = normalize_http_sqli_record(make_record())

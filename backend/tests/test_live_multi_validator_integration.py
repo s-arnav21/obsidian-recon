@@ -12,6 +12,12 @@ from app.scanning.normalizer import (
     normalize_exposed_resource_record,
 )
 from app.validation.dispatcher import dispatch
+from app.validation.command_execution import (
+    BASELINE_DIAGNOSTIC_TOKEN,
+    CONTROL_PROBE_TOKEN,
+    EXECUTION_MARKER,
+    EXECUTION_PROBE_TOKEN,
+)
 from tests.integration_apps.local_multi_validator_pipeline import (
     ScopedLoopbackHttpClient,
     TargetScopeError,
@@ -88,6 +94,30 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
         self.assertEqual(response.text, SYNTHETIC_EXPOSURE_BODY)
         self.assertIn("FAKE-NOT-A-REAL-SECRET", response.text)
 
+    def test_command_endpoint_recognizes_only_fixed_synthetic_probe(self):
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            baseline = client.post(
+                f"{self.origin}/admin/diagnostics",
+                data={"diagnostic_token": BASELINE_DIAGNOSTIC_TOKEN},
+            )
+            probe = client.post(
+                f"{self.origin}/admin/diagnostics",
+                data={"diagnostic_token": EXECUTION_PROBE_TOKEN},
+            )
+            control = client.post(
+                f"{self.origin}/admin/diagnostics",
+                data={"diagnostic_token": CONTROL_PROBE_TOKEN},
+            )
+            arbitrary = client.post(
+                f"{self.origin}/admin/diagnostics",
+                data={"diagnostic_token": "caller-controlled-value"},
+            )
+
+        self.assertNotIn(EXECUTION_MARKER, baseline.text)
+        self.assertIn(EXECUTION_MARKER, probe.text)
+        self.assertNotIn(EXECUTION_MARKER, control.text)
+        self.assertNotIn(EXECUTION_MARKER, arbitrary.text)
+
     def test_all_records_normalize_with_independent_routing(self):
         expected = {
             "sql_injection": (
@@ -99,6 +129,11 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
                 "reflected_xss",
                 "generic-http-reflected-xss",
                 "local-fixture-reflected-xss-check",
+            ),
+            "command_execution": (
+                "command_execution",
+                "generic-http-command-execution",
+                "local-fixture-command-execution-check",
             ),
             "exposed_resource": (
                 "information_disclosure",
@@ -161,6 +196,29 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
             ["potential_information_exposure"],
         )
 
+    def test_live_command_execution_confirms_and_maps_to_t1059_004(self):
+        validation = self.validation("command_execution")
+        self.assertEqual(
+            validation["validation_result"]["validator"],
+            "generic_http_command_execution",
+        )
+        self.assertEqual(
+            validation["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            validation["finding"]["mitre_technique_id"],
+            "T1059.004",
+        )
+        self.assertEqual(
+            validation["finding"]["requires_any"],
+            ["application_compromise"],
+        )
+        self.assertEqual(
+            validation["finding"]["provides"],
+            ["command_execution"],
+        )
+
     def test_attack_chain_contains_t1190_without_fabricated_mappings(self):
         chains = self.pipeline_result["chains"]
         self.assertEqual(len(chains), 3)
@@ -170,6 +228,10 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
         ]
         self.assertEqual(len(t1190_chains), 1)
         self.assertEqual(t1190_chains[0]["status"], "confirmed")
+        self.assertEqual(
+            t1190_chains[0]["mitre_techniques"],
+            ["T1190", "T1059.004"],
+        )
         self.assertIn(
             self.validation("sql_injection")["finding"]["finding_id"],
             [step["finding_id"] for step in t1190_chains[0]["steps"]],
@@ -191,6 +253,9 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
                 (
                     reachability_id,
                     self.validation("sql_injection")["finding"]["finding_id"],
+                    self.validation("command_execution")["finding"][
+                        "finding_id"
+                    ],
                 ),
             },
         )
@@ -209,7 +274,7 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
             urlsplit(self.origin).hostname,
             urlsplit(self.origin).port,
         )
-        self.assertGreaterEqual(len(self.requested_urls), 7)
+        self.assertGreaterEqual(len(self.requested_urls), 10)
         for requested_url in self.requested_urls:
             parsed = urlsplit(requested_url)
             self.assertEqual(
@@ -218,7 +283,13 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
             )
         self.assertEqual(
             {urlsplit(url).path for url in self.requested_urls},
-            {"/health", "/items", "/search", "/debug-config"},
+            {
+                "/health",
+                "/items",
+                "/search",
+                "/debug-config",
+                "/admin/diagnostics",
+            },
         )
 
     def test_cross_origin_finding_is_rejected_without_contact(self):

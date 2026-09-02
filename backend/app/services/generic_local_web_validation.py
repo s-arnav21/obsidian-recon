@@ -20,6 +20,7 @@ from app.models.validation import ValidationResult
 from app.scanning.normalizer import (
     ExposedResourceScannerRecord,
     HttpScannerRecord,
+    normalize_command_execution_record,
     normalize_exposed_resource_record,
     normalize_http_sqli_record,
     normalize_reflected_xss_record,
@@ -230,6 +231,18 @@ def _scanner_records(
             evidence={"fixture_endpoint": True},
             **common,
         ),
+        "command_execution": HttpScannerRecord(
+            record_id=f"finding-{uuid4()}",
+            endpoint="/admin/diagnostics",
+            http_method="POST",
+            parameter_name="diagnostic_token",
+            parameter_location="form",
+            scanner_template_id="local-fixture-command-execution-check",
+            vulnerability_type="command_execution",
+            severity="critical",
+            evidence={"fixture_endpoint": True},
+            **common,
+        ),
         "exposed_resource": ExposedResourceScannerRecord(
             record_id=f"finding-{uuid4()}",
             endpoint="/debug-config",
@@ -273,6 +286,9 @@ def execute_local_multi_validator_pipeline(
     findings = {
         "sql_injection": normalize_http_sqli_record(records["sql_injection"]),
         "reflected_xss": normalize_reflected_xss_record(records["reflected_xss"]),
+        "command_execution": normalize_command_execution_record(
+            records["command_execution"]
+        ),
         "exposed_resource": normalize_exposed_resource_record(
             records["exposed_resource"]
         ),

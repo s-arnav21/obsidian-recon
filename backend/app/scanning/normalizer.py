@@ -13,11 +13,16 @@ from app.models.finding import Finding, ValidationStatus
 GENERIC_SQLI_VALIDATOR_ID = "generic-http-sqli"
 GENERIC_REFLECTED_XSS_VALIDATOR_ID = "generic-http-reflected-xss"
 GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID = "generic-http-exposed-resource"
+GENERIC_COMMAND_EXECUTION_VALIDATOR_ID = "generic-http-command-execution"
 SUPPORTED_REQUEST_SHAPES = frozenset({
     ("GET", "query"),
     ("POST", "form"),
 })
 SQLI_TYPES = frozenset({"sql_injection", "sqli"})
+COMMAND_EXECUTION_TYPES = frozenset({
+    "command_execution",
+    "unix_shell_command_execution",
+})
 REFLECTED_XSS_TYPES = frozenset({
     "cross_site_scripting",
     "reflected_cross_site_scripting",
@@ -278,6 +283,40 @@ def normalize_reflected_xss_record(record: HttpScannerRecord) -> Finding:
         request_shape_error=(
             "supported reflected-XSS request shapes are GET/query and POST/form"
         ),
+    )
+
+
+def normalize_command_execution_record(record: HttpScannerRecord) -> Finding:
+    """Normalize a trusted synthetic command-execution sink observation."""
+    if not isinstance(record, HttpScannerRecord):
+        raise TypeError("record must be an HttpScannerRecord")
+
+    normalized_type = _normalized_type_name(record.vulnerability_type)
+    if normalized_type not in COMMAND_EXECUTION_TYPES:
+        raise ScannerNormalizationError(
+            "vulnerability_type must identify command execution"
+        )
+
+    http_method = _required_text(record.http_method, "http_method").upper()
+    parameter_location = _required_text(
+        record.parameter_location,
+        "parameter_location",
+    ).lower()
+    if (http_method, parameter_location) != ("POST", "form"):
+        raise ScannerNormalizationError(
+            "controlled command-execution validation requires POST/form"
+        )
+
+    return _build_finding(
+        record,
+        vulnerability_type="command_execution",
+        validator_id=GENERIC_COMMAND_EXECUTION_VALIDATOR_ID,
+        http_method=http_method,
+        parameter_name=_required_text(
+            record.parameter_name,
+            "parameter_name",
+        ),
+        parameter_location=parameter_location,
     )
 
 

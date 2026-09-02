@@ -12,6 +12,9 @@ from typing import Any, Callable, Dict, Optional
 
 from app.models.finding import Finding, STATUS_WEIGHT, ValidationStatus
 from app.models.validation import ValidationResult
+from app.validation.command_execution import (
+    validate_generic_http_command_execution,
+)
 from app.validation.exposure import validate_generic_exposed_resource
 from app.validation.sql_injection import validate_generic_http_sqli
 from app.validation.xss import validate_generic_reflected_xss
@@ -36,6 +39,9 @@ def register(template_id: str) -> Callable[[ValidationHandler], ValidationHandle
 register("generic-http-sqli")(validate_generic_http_sqli)
 register("generic-http-reflected-xss")(validate_generic_reflected_xss)
 register("generic-http-exposed-resource")(validate_generic_exposed_resource)
+register("generic-http-command-execution")(
+    validate_generic_http_command_execution
+)
 
 
 # Lab-specific handler retained without expanding its validation behavior.

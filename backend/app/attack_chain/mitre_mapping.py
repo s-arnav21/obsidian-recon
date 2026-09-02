@@ -86,6 +86,23 @@ TECHNIQUE_DEFINITIONS: Dict[str, TechniqueDefinition] = {
         cwe_hints=["CWE-89", "CWE-78", "CWE-502"],
         owasp_hints=["A03:2021"],
     ),
+    "T1059.004": TechniqueDefinition(
+        technique_id="T1059.004",
+        technique_name="Command and Scripting Interpreter: Unix Shell",
+        tactic="Execution",
+        description=(
+            "Validated deterministic Unix-shell interpretation after an "
+            "application compromise."
+        ),
+        requires_any=["application_compromise"],
+        provides=["command_execution"],
+        vulnerability_types=[
+            "command_execution",
+            "unix_shell_command_execution",
+        ],
+        cwe_hints=["CWE-78"],
+        owasp_hints=["A03:2021"],
+    ),
     "T1078": TechniqueDefinition(
         technique_id="T1078",
         technique_name="Valid Accounts",
