@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
+from uuid import uuid4
 
 import httpx
 
 from app.attack_chain.engine import build_attack_paths
 from app.attack_chain.mitre_mapping import enrich_finding_model
+from app.models.attack_chain import AttackChain
 from app.models.finding import Finding, ValidationStatus
+from app.models.validation import ValidationResult
 from app.scanning.normalizer import (
     ExposedResourceScannerRecord,
     HttpScannerRecord,
@@ -32,6 +36,72 @@ class TargetScopeError(ValueError):
 
 class LocalTargetConnectionError(ConnectionError):
     """Raised when the approved local fixture cannot be reached safely."""
+
+
+@dataclass(frozen=True)
+class GenericValidationArtifact:
+    """Original candidate and its separate deterministic validation views."""
+
+    name: str
+    candidate: Finding
+    validation: ValidationResult
+    enriched: Finding
+
+
+@dataclass(frozen=True)
+class GenericLocalWebRun:
+    """Typed artifacts retained until optional persistence is complete."""
+
+    origin: str
+    scan_id: str
+    asset_id: str
+    reachability: Finding
+    validations: Tuple[GenericValidationArtifact, ...]
+    chains: Tuple[AttackChain, ...]
+
+    @property
+    def findings(self) -> Tuple[Finding, ...]:
+        return (
+            self.reachability,
+            *(artifact.candidate for artifact in self.validations),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        serialized_validations = {
+            artifact.name: {
+                "finding": artifact.enriched.to_dict(),
+                "validation_result": artifact.validation.to_dict(),
+            }
+            for artifact in self.validations
+        }
+        serialized_chains = [chain.to_dict() for chain in self.chains]
+        chain_status = (
+            "confirmed"
+            if serialized_chains
+            and all(chain["status"] == "confirmed" for chain in serialized_chains)
+            else "potential"
+            if serialized_chains
+            else "none"
+        )
+        return {
+            "mode": "live_loopback_fixture",
+            "scenario": GENERIC_LOCAL_WEB_SCENARIO,
+            "overall_status": "completed",
+            "target_url": self.origin,
+            "origin": self.origin,
+            "scan_id": self.scan_id,
+            "asset_id": self.asset_id,
+            "findings": [
+                artifact.enriched.to_dict() for artifact in self.validations
+            ],
+            "validations": serialized_validations,
+            "chain_result": {
+                "status": chain_status,
+                "chains": serialized_chains,
+            },
+            # Retained for the Step 7 integration contract.
+            "chains": serialized_chains,
+        }
 
 
 def _origin_tuple(
@@ -137,7 +207,7 @@ def _scanner_records(
     }
     return {
         "sql_injection": HttpScannerRecord(
-            record_id="finding-live-sqli",
+            record_id=f"finding-{uuid4()}",
             endpoint="/items",
             http_method="GET",
             parameter_name="id",
@@ -149,7 +219,7 @@ def _scanner_records(
             **common,
         ),
         "reflected_xss": HttpScannerRecord(
-            record_id="finding-live-xss",
+            record_id=f"finding-{uuid4()}",
             endpoint="/search",
             http_method="GET",
             parameter_name="q",
@@ -161,7 +231,7 @@ def _scanner_records(
             **common,
         ),
         "exposed_resource": ExposedResourceScannerRecord(
-            record_id="finding-live-exposure",
+            record_id=f"finding-{uuid4()}",
             endpoint="/debug-config",
             scanner_template_id="local-fixture-exposure-check",
             vulnerability_type="debug_resource_exposure",
@@ -172,11 +242,13 @@ def _scanner_records(
     }
 
 
-def run_local_multi_validator_pipeline(
+def execute_local_multi_validator_pipeline(
     origin: str,
     client: ScopedLoopbackHttpClient,
-) -> Dict[str, Any]:
-    """Run existing normalizers, validators, enrichment, and chain engine."""
+    *,
+    scan_id: Optional[str] = None,
+) -> GenericLocalWebRun:
+    """Run the existing pipeline and retain typed artifacts for persistence."""
     if client.approved_origin != origin.rstrip("/"):
         raise TargetScopeError("pipeline origin must match the scoped client")
 
@@ -186,13 +258,15 @@ def run_local_multi_validator_pipeline(
             "authorized local target failed its fixture health check"
         )
 
-    scan_id = "scan-local-multi-validator"
-    asset_digest = hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
+    resolved_scan_id = scan_id or f"scan-{uuid4()}"
+    asset_digest = hashlib.sha256(
+        f"{resolved_scan_id}:{origin}".encode("utf-8")
+    ).hexdigest()[:16]
     asset_id = f"asset-{asset_digest}"
     observed_at = datetime.now(timezone.utc).isoformat()
     records = _scanner_records(
         origin,
-        scan_id=scan_id,
+        scan_id=resolved_scan_id,
         asset_id=asset_id,
         observed_at=observed_at,
     )
@@ -204,22 +278,24 @@ def run_local_multi_validator_pipeline(
         ),
     }
 
-    validations: Dict[str, Dict[str, Any]] = {}
+    validations = []
     enriched_findings = []
     for name, finding in findings.items():
         validation_result = dispatch(finding, session=client)
         validated = apply_validation_result(finding, validation_result)
         enriched = enrich_finding_model(validated)
         enriched_findings.append(enriched)
-        validations[name] = {
-            "finding": enriched.to_dict(),
-            "validation_result": validation_result.to_dict(),
-        }
+        validations.append(GenericValidationArtifact(
+            name=name,
+            candidate=finding,
+            validation=validation_result,
+            enriched=enriched,
+        ))
 
     parsed_origin = urlsplit(origin)
     reachability = Finding(
-        finding_id="finding-live-reachability",
-        scan_id=scan_id,
+        finding_id=f"finding-{uuid4()}",
+        scan_id=resolved_scan_id,
         asset_id=asset_id,
         target=origin,
         host=parsed_origin.hostname or "127.0.0.1",
@@ -234,42 +310,37 @@ def run_local_multi_validator_pipeline(
         evidence={"health_status": health_response.status_code},
     )
     chains = build_attack_paths([reachability, *enriched_findings])
-    serialized_chains = [chain.to_dict() for chain in chains]
-    chain_status = (
-        "confirmed"
-        if serialized_chains
-        and all(chain["status"] == "confirmed" for chain in serialized_chains)
-        else "potential"
-        if serialized_chains
-        else "none"
+    return GenericLocalWebRun(
+        origin=origin,
+        scan_id=resolved_scan_id,
+        asset_id=asset_id,
+        reachability=reachability,
+        validations=tuple(validations),
+        chains=tuple(chains),
     )
 
-    return {
-        "mode": "live_loopback_fixture",
-        "scenario": GENERIC_LOCAL_WEB_SCENARIO,
-        "overall_status": "completed",
-        "target_url": origin,
-        "origin": origin,
-        "scan_id": scan_id,
-        "asset_id": asset_id,
-        "findings": [
-            result["finding"] for result in validations.values()
-        ],
-        "validations": validations,
-        "chain_result": {
-            "status": chain_status,
-            "chains": serialized_chains,
-        },
-        # Retained for the Step 7 integration contract.
-        "chains": serialized_chains,
-    }
+
+def run_local_multi_validator_pipeline(
+    origin: str,
+    client: ScopedLoopbackHttpClient,
+) -> Dict[str, Any]:
+    """Compatibility wrapper returning the existing serialized response."""
+    return execute_local_multi_validator_pipeline(origin, client).to_dict()
 
 
-def run_generic_local_web_validation(origin: str) -> Dict[str, Any]:
-    """Run the demo against one exact loopback origin with safe failures."""
+def execute_generic_local_web_validation(
+    origin: str,
+    *,
+    scan_id: Optional[str] = None,
+) -> GenericLocalWebRun:
+    """Execute against one exact loopback origin and return typed artifacts."""
     try:
         with ScopedLoopbackHttpClient(origin) as client:
-            return run_local_multi_validator_pipeline(origin, client)
+            return execute_local_multi_validator_pipeline(
+                origin,
+                client,
+                scan_id=scan_id,
+            )
     except TargetScopeError:
         raise
     except LocalTargetConnectionError:
@@ -278,3 +349,8 @@ def run_generic_local_web_validation(origin: str) -> Dict[str, Any]:
         raise LocalTargetConnectionError(
             "authorized local target is unreachable"
         ) from exc
+
+
+def run_generic_local_web_validation(origin: str) -> Dict[str, Any]:
+    """Run the demo against one exact loopback origin with safe failures."""
+    return execute_generic_local_web_validation(origin).to_dict()

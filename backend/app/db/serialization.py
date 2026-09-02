@@ -20,6 +20,7 @@ def scan_to_dict(scan: ScanORM) -> Dict[str, Any]:
         "authorized": scan.authorized,
         "started_at": _timestamp(scan.started_at),
         "completed_at": _timestamp(scan.completed_at),
+        "failure_reason": scan.failure_reason,
         "created_at": _timestamp(scan.created_at),
     }
 

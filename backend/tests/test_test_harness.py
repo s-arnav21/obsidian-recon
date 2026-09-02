@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from fastapi.testclient import TestClient
 
 from app.api.test_harness import get_test_harness_pipeline
+from app.db.session import get_db
 from app.integrations.labs.dvwa import (
     DVWALabConfigurationError,
     DVWALabConnectionError,
@@ -25,6 +26,7 @@ from app.services.test_harness import (
 )
 from app.validation.dispatcher import dispatch
 from tests.integration_apps.vulnerable_web_app import LocalVulnerableAppServer
+from tests.db_utils import make_test_session_factory
 
 
 class FakeResponse:
@@ -317,7 +319,22 @@ class TestHarnessApiTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.engine, cls.factory = make_test_session_factory()
+
+        def override_get_db():
+            session = cls.factory()
+            try:
+                yield session
+            finally:
+                session.close()
+
+        app.dependency_overrides[get_db] = override_get_db
         cls.client = TestClient(app)
+
+    @classmethod
+    def tearDownClass(cls):
+        app.dependency_overrides.pop(get_db, None)
+        cls.engine.dispose()
 
     def post(self, **overrides):
         request = {
@@ -386,6 +403,7 @@ class TestHarnessApiTests(unittest.TestCase):
                 "mode",
                 "scenario",
                 "target_url",
+                "scan_id",
                 "finding",
                 "validation_result",
                 "technique",
@@ -454,7 +472,7 @@ class TestHarnessApiTests(unittest.TestCase):
         self.assertIn("configuration", response.json()["detail"])
 
     def test_api_returns_clean_generic_local_connection_error(self):
-        def unreachable(_origin):
+        def unreachable(_origin, *, scan_id):
             raise LocalTargetConnectionError(
                 "authorized local target is unreachable"
             )
@@ -462,7 +480,7 @@ class TestHarnessApiTests(unittest.TestCase):
         pipeline = TestHarnessPipeline(
             mode="fixture",
             allowed_origins=[],
-            generic_scenario_runner=unreachable,
+            generic_scenario_executor=unreachable,
         )
         app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
         try:
@@ -520,6 +538,16 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
         cls.server = LocalVulnerableAppServer()
         cls.origin = cls.server.start()
         cls.addClassCleanup(cls.server.stop)
+        cls.engine, cls.factory = make_test_session_factory()
+
+        def override_get_db():
+            session = cls.factory()
+            try:
+                yield session
+            finally:
+                session.close()
+
+        app.dependency_overrides[get_db] = override_get_db
         cls.client = TestClient(app)
         pipeline = TestHarnessPipeline(mode="fixture", allowed_origins=[])
         app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
@@ -535,6 +563,11 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
         finally:
             app.dependency_overrides.pop(get_test_harness_pipeline, None)
         cls.body = cls.response.json()
+
+    @classmethod
+    def tearDownClass(cls):
+        app.dependency_overrides.pop(get_db, None)
+        cls.engine.dispose()
 
     def validation(self, name):
         return self.body["validations"][name]

@@ -11,6 +11,8 @@ from typing import Any, Callable, ContextManager, Dict, Iterable, Optional, Prot
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
+from sqlalchemy.orm import Session
+
 from app.attack_chain.engine import build_attack_paths, load_all_findings
 from app.attack_chain.mitre_mapping import enrich_finding_model
 from app.integrations.labs.dvwa import DVWALabAdapter
@@ -18,8 +20,17 @@ from app.models.finding import Finding, ValidationStatus
 from app.models.validation import ValidationResult
 from app.services.generic_local_web_validation import (
     GENERIC_LOCAL_WEB_SCENARIO,
+    GenericLocalWebRun,
     TargetScopeError,
+    execute_generic_local_web_validation,
     run_generic_local_web_validation,
+)
+from app.services.persistence import (
+    ServicePersistenceRecord,
+    ValidationPersistenceRecord,
+    mark_validation_run_failed,
+    persist_validation_outputs,
+    start_validation_run,
 )
 from app.validation.dispatcher import apply_validation_result, dispatch
 
@@ -89,6 +100,7 @@ class LabAdapter(Protocol):
 
 LabAdapterFactory = Callable[[], LabAdapter]
 GenericScenarioRunner = Callable[[str], Dict[str, Any]]
+GenericScenarioExecutor = Callable[..., GenericLocalWebRun]
 
 
 def deterministic_fixture_result(finding: Finding) -> ValidationResult:
@@ -223,6 +235,9 @@ class TestHarnessPipeline:
         generic_scenario_runner: GenericScenarioRunner = (
             run_generic_local_web_validation
         ),
+        generic_scenario_executor: GenericScenarioExecutor = (
+            execute_generic_local_web_validation
+        ),
     ) -> None:
         if not callable(fixture_result_provider):
             raise TypeError("fixture_result_provider must be callable")
@@ -233,9 +248,12 @@ class TestHarnessPipeline:
             raise TypeError("lab_adapter_factory must be callable")
         if not callable(generic_scenario_runner):
             raise TypeError("generic_scenario_runner must be callable")
+        if not callable(generic_scenario_executor):
+            raise TypeError("generic_scenario_executor must be callable")
         self._dispatcher = dispatcher
         self._lab_adapter_factory = lab_adapter_factory
         self._generic_scenario_runner = generic_scenario_runner
+        self._generic_scenario_executor = generic_scenario_executor
         configured_mode = mode if mode is not None else os.getenv(
             MODE_ENV,
             FIXTURE_MODE,
@@ -280,6 +298,7 @@ class TestHarnessPipeline:
         target_url: str,
         scenario: str,
         authorized: bool,
+        persistence_session: Optional[Session] = None,
     ) -> Dict[str, object]:
         self._validate_mode()
         if authorized is not True:
@@ -303,12 +322,7 @@ class TestHarnessPipeline:
                     "generic local web validation requires a target origin "
                     "without a path"
                 )
-            try:
-                return self._generic_scenario_runner(target.origin)
-            except TargetScopeError as exc:
-                raise TargetNotAllowedError(str(exc)) from exc
-
-        if (
+        elif (
             not _is_loopback_host(target.host)
             and target.origin not in self._allowed_origins
         ):
@@ -319,9 +333,93 @@ class TestHarnessPipeline:
 
         scan_id = f"scan-{uuid4()}"
         asset_digest = hashlib.sha256(
-            target.origin.encode("utf-8")
+            f"{scan_id}:{target.origin}".encode("utf-8")
         ).hexdigest()[:16]
         asset_id = f"asset-{asset_digest}"
+
+        scan_started = False
+        if persistence_session is not None:
+            start_validation_run(
+                persistence_session,
+                scan_id=scan_id,
+                target_url=target.url,
+                authorized=authorized,
+            )
+            scan_started = True
+
+        try:
+            if scenario == GENERIC_LOCAL_WEB_SCENARIO:
+                if persistence_session is None:
+                    return self._generic_scenario_runner(target.origin)
+                generic_run = self._generic_scenario_executor(
+                    target.origin,
+                    scan_id=scan_id,
+                )
+                persist_validation_outputs(
+                    persistence_session,
+                    scan_id=scan_id,
+                    findings=generic_run.findings,
+                    validations=[
+                        ValidationPersistenceRecord(
+                            candidate=artifact.candidate,
+                            validation=artifact.validation,
+                            enriched=artifact.enriched,
+                        )
+                        for artifact in generic_run.validations
+                    ],
+                    attack_chains=generic_run.chains,
+                    services=[ServicePersistenceRecord(
+                        asset_id=generic_run.asset_id,
+                        port=target.port,
+                        protocol="tcp",
+                        service_name=target.protocol,
+                        state="open",
+                        source="local_integration_fixture",
+                    )],
+                )
+                return generic_run.to_dict()
+
+            return self._run_public_app_scenario(
+                target=target,
+                scenario=scenario,
+                scan_id=scan_id,
+                asset_id=asset_id,
+                persistence_session=persistence_session,
+            )
+        except TargetScopeError as exc:
+            if scan_started:
+                self._mark_failed(persistence_session, scan_id, exc)
+            raise TargetNotAllowedError(str(exc)) from exc
+        except Exception as exc:
+            if scan_started:
+                self._mark_failed(persistence_session, scan_id, exc)
+            raise
+
+    @staticmethod
+    def _mark_failed(
+        session: Optional[Session],
+        scan_id: str,
+        error: Exception,
+    ) -> None:
+        if session is None:
+            return
+        mark_validation_run_failed(
+            session,
+            scan_id=scan_id,
+            failure_reason=(
+                f"{type(error).__name__}: controlled harness run failed"
+            ),
+        )
+
+    def _run_public_app_scenario(
+        self,
+        *,
+        target: TargetContext,
+        scenario: str,
+        scan_id: str,
+        asset_id: str,
+        persistence_session: Optional[Session],
+    ) -> Dict[str, object]:
 
         observed_at = datetime.now(timezone.utc).isoformat()
         reachability_fixture = _load_fixture_finding("nmap_scan")
@@ -392,6 +490,28 @@ class TestHarnessPipeline:
         )
         mapped_finding = enrich_finding_model(validated_finding)
         chains = build_attack_paths([reachability, mapped_finding])
+
+        if persistence_session is not None:
+            persist_validation_outputs(
+                persistence_session,
+                scan_id=scan_id,
+                findings=[reachability, finding],
+                validations=[ValidationPersistenceRecord(
+                    candidate=finding,
+                    validation=validation_result,
+                    enriched=mapped_finding,
+                )],
+                attack_chains=chains,
+                services=[ServicePersistenceRecord(
+                    asset_id=asset_id,
+                    port=target.port,
+                    protocol="tcp",
+                    service_name=target.protocol,
+                    state="open",
+                    source=reachability.source,
+                )],
+            )
+
         serialized_chains = [chain.to_dict() for chain in chains]
         chain_status = (
             serialized_chains[0]["status"] if serialized_chains else "none"
@@ -417,6 +537,7 @@ class TestHarnessPipeline:
             "mode": self._mode,
             "scenario": scenario,
             "target_url": target.url,
+            "scan_id": scan_id,
             "finding": mapped_finding.to_dict(),
             "validation_result": validation_result.to_dict(),
             "technique": technique,

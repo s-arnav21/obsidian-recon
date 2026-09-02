@@ -97,14 +97,16 @@ class PersistenceRepository:
         status: str,
         *,
         completed_at: Optional[datetime] = None,
+        failure_reason: Optional[str] = None,
     ) -> ScanORM:
         record = self.session.get(ScanORM, scan_id)
         if record is None:
             raise PersistenceNotFoundError(f"scan {scan_id!r} was not found")
         record.status = status
+        record.failure_reason = failure_reason
         if completed_at is not None:
             record.completed_at = completed_at
-        elif status == "completed":
+        elif status in {"completed", "failed"}:
             record.completed_at = datetime.now(timezone.utc)
         self.session.flush()
         return record

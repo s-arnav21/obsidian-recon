@@ -7,7 +7,9 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, StrictBool
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
 from app.integrations.labs.dvwa import (
     DVWALabConfigurationError,
     DVWALabConnectionError,
@@ -46,12 +48,14 @@ def get_test_harness_pipeline() -> TestHarnessPipeline:
 def run_test_harness(
     request: TestHarnessRequest,
     pipeline: TestHarnessPipeline = Depends(get_test_harness_pipeline),
+    session: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     try:
         return pipeline.run(
             target_url=request.target_url,
             scenario=request.scenario,
             authorized=request.authorized,
+            persistence_session=session,
         )
     except AuthorizationRequiredError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

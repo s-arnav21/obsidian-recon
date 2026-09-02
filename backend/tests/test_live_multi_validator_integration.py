@@ -171,8 +171,14 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
         self.assertEqual(len(t1190_chains), 1)
         self.assertEqual(t1190_chains[0]["status"], "confirmed")
         self.assertIn(
-            "finding-live-sqli",
+            self.validation("sql_injection")["finding"]["finding_id"],
             [step["finding_id"] for step in t1190_chains[0]["steps"]],
+        )
+        reachability_id = next(
+            step["finding_id"]
+            for chain in chains
+            for step in chain["steps"]
+            if step["vulnerability_type"] == "service_scan"
         )
         self.assertEqual(
             {
@@ -180,17 +186,21 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
                 for chain in chains
             },
             {
-                ("finding-live-exposure",),
-                ("finding-live-xss",),
-                ("finding-live-reachability", "finding-live-sqli"),
+                (self.validation("exposed_resource")["finding"]["finding_id"],),
+                (self.validation("reflected_xss")["finding"]["finding_id"],),
+                (
+                    reachability_id,
+                    self.validation("sql_injection")["finding"]["finding_id"],
+                ),
             },
         )
+        non_mapped_ids = {
+            self.validation("reflected_xss")["finding"]["finding_id"],
+            self.validation("exposed_resource")["finding"]["finding_id"],
+        }
         for chain in chains:
             for step in chain["steps"]:
-                if step["finding_id"] in {
-                    "finding-live-xss",
-                    "finding-live-exposure",
-                }:
+                if step["finding_id"] in non_mapped_ids:
                     self.assertIsNone(step["mitre_technique_id"])
 
     def test_every_pipeline_request_stays_on_approved_origin(self):
