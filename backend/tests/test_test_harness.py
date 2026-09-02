@@ -1,0 +1,628 @@
+"""Tests for the safe, deterministic local test harness."""
+
+import unittest
+from contextlib import contextmanager
+
+from fastapi.testclient import TestClient
+
+from app.api.test_harness import get_test_harness_pipeline
+from app.integrations.labs.dvwa import (
+    DVWALabConfigurationError,
+    DVWALabConnectionError,
+)
+from app.main import app
+from app.models.finding import Finding, ValidationStatus
+from app.models.validation import ValidationResult
+from app.services.generic_local_web_validation import (
+    GENERIC_LOCAL_WEB_SCENARIO,
+    LocalTargetConnectionError,
+)
+from app.services.test_harness import (
+    AuthorizationRequiredError,
+    InvalidTargetError,
+    TargetNotAllowedError,
+    TestHarnessPipeline,
+)
+from app.validation.dispatcher import dispatch
+from tests.integration_apps.vulnerable_web_app import LocalVulnerableAppServer
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeValidatorSession:
+    def __init__(self, *, confirmed=True):
+        baseline_record = (
+            '<pre>ID: 1<br />First name: admin<br />Surname: admin</pre>'
+        )
+        injected_text = (
+            "".join(
+                f'<pre>ID: {index}<br />First name: user{index}'
+                f'<br />Surname: surname{index}</pre>'
+                for index in range(1, 6)
+            )
+            if confirmed
+            else baseline_record
+        )
+        self.responses = iter([
+            FakeResponse(
+                '<input name="user_token" value="token-one">'
+            ),
+            FakeResponse(
+                baseline_record
+                + '<input name="user_token" value="token-two">'
+            ),
+            FakeResponse(injected_text),
+        ])
+        self.calls = []
+
+    def get(self, url, params=None):
+        self.calls.append((url, params))
+        return next(self.responses)
+
+
+class FakeLabAdapter:
+    def __init__(self, session, base_url="http://127.0.0.1:8080"):
+        self.base_url = base_url
+        self._session = session
+
+    @contextmanager
+    def session(self):
+        yield self._session
+
+
+class FailingLabAdapter:
+    base_url = "http://127.0.0.1:8080"
+
+    @contextmanager
+    def session(self):
+        raise DVWALabConnectionError("local lab is unavailable")
+        yield
+
+
+class TestHarnessPipelineTests(unittest.TestCase):
+
+    def setUp(self):
+        self.pipeline = TestHarnessPipeline(
+            allowed_origins=[],
+            mode="fixture",
+        )
+
+    def test_authorization_is_required(self):
+        with self.assertRaisesRegex(
+            AuthorizationRequiredError,
+            "authorization",
+        ):
+            self.pipeline.run(
+                target_url="http://localhost",
+                scenario="public_app_validation",
+                authorized=False,
+            )
+
+    def test_malformed_url_is_rejected(self):
+        with self.assertRaisesRegex(InvalidTargetError, "http or https"):
+            self.pipeline.run(
+                target_url="localhost/dvwa",
+                scenario="public_app_validation",
+                authorized=True,
+            )
+
+    def test_non_local_target_is_rejected(self):
+        with self.assertRaisesRegex(TargetNotAllowedError, "allowlisted"):
+            self.pipeline.run(
+                target_url="https://example.com",
+                scenario="public_app_validation",
+                authorized=True,
+            )
+
+    def test_deterministic_fixture_path_uses_existing_pipeline(self):
+        result = self.pipeline.run(
+            target_url="http://127.0.0.1:8080/dvwa",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+
+        self.assertEqual(result["mode"], "fixture")
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(result["technique"]["technique_id"], "T1190")
+        self.assertEqual(result["chain_result"]["status"], "confirmed")
+        self.assertEqual(
+            result["chain_result"]["chains"][0]["mitre_techniques"],
+            ["T1190"],
+        )
+
+    def test_fixture_provider_receives_canonical_finding(self):
+        received = []
+
+        def fixture_provider(finding):
+            received.append(finding)
+            return ValidationResult(
+                status=ValidationStatus.MANUAL_REVIEW,
+                confidence=0.6,
+                validator="injected_test_fixture",
+                method="unit_test",
+                evidence={"fixture": True},
+            )
+
+        pipeline = TestHarnessPipeline(
+            fixture_result_provider=fixture_provider,
+            allowed_origins=[],
+            mode="fixture",
+        )
+        result = pipeline.run(
+            target_url="http://localhost",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertIsInstance(received[0], Finding)
+        self.assertEqual(result["chain_result"]["status"], "potential")
+
+    def test_explicit_lab_origin_can_be_allowlisted_without_network_access(self):
+        pipeline = TestHarnessPipeline(
+            allowed_origins=["http://lab.internal:8080"],
+            mode="fixture",
+        )
+        result = pipeline.run(
+            target_url="http://lab.internal:8080/dvwa",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+        self.assertEqual(result["target_url"], "http://lab.internal:8080/dvwa")
+        self.assertTrue(result["validation_result"]["evidence"]["fixture"])
+
+    def test_missing_local_lab_configuration_is_reported(self):
+        def missing_config():
+            raise DVWALabConfigurationError(
+                "missing local-lab configuration"
+            )
+
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=missing_config,
+        )
+        with self.assertRaisesRegex(
+            DVWALabConfigurationError,
+            "missing local-lab configuration",
+        ):
+            pipeline.run(
+                target_url="http://127.0.0.1:8080",
+                scenario="public_app_validation",
+                authorized=True,
+            )
+
+    def test_local_lab_connection_failure_is_reported(self):
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=lambda: FailingLabAdapter(),
+        )
+        with self.assertRaisesRegex(
+            DVWALabConnectionError,
+            "unavailable",
+        ):
+            pipeline.run(
+                target_url="http://127.0.0.1:8080",
+                scenario="public_app_validation",
+                authorized=True,
+            )
+
+    def test_local_lab_uses_existing_registered_validator(self):
+        session = FakeValidatorSession(confirmed=True)
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=lambda: FakeLabAdapter(session),
+        )
+        result = pipeline.run(
+            target_url="http://127.0.0.1:8080",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+
+        self.assertEqual(result["mode"], "local_lab")
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "dvwa_sqli_low",
+        )
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["evidence"]["baseline_result_count"],
+            1,
+        )
+        self.assertEqual(
+            result["validation_result"]["evidence"]["injected_result_count"],
+            5,
+        )
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(result["technique"]["technique_id"], "T1190")
+        self.assertEqual(result["chain_result"]["status"], "confirmed")
+
+    def test_rejected_local_lab_validation_has_no_confirmed_chain(self):
+        session = FakeValidatorSession(confirmed=False)
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=lambda: FakeLabAdapter(session),
+        )
+        result = pipeline.run(
+            target_url="http://127.0.0.1:8080",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.REJECTED,
+        )
+        self.assertNotEqual(result["chain_result"]["status"], "confirmed")
+        self.assertEqual(result["chain_result"]["chains"], [])
+
+    def test_assessment_identifiers_survive_local_lab_pipeline(self):
+        received = []
+        session = FakeValidatorSession(confirmed=True)
+
+        def recording_dispatcher(finding, validator_session):
+            received.append(finding)
+            return dispatch(finding, validator_session)
+
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            dispatcher=recording_dispatcher,
+            lab_adapter_factory=lambda: FakeLabAdapter(session),
+        )
+        result = pipeline.run(
+            target_url="http://127.0.0.1:8080",
+            scenario="public_app_validation",
+            authorized=True,
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertIsInstance(received[0], Finding)
+        for field_name in ("finding_id", "scan_id", "asset_id"):
+            self.assertEqual(
+                result["finding"][field_name],
+                getattr(received[0], field_name),
+            )
+
+    def test_local_lab_target_must_match_backend_configuration(self):
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=lambda: FakeLabAdapter(
+                FakeValidatorSession(),
+                base_url="http://127.0.0.1:8080",
+            ),
+        )
+        with self.assertRaisesRegex(TargetNotAllowedError, "DVWA_BASE_URL"):
+            pipeline.run(
+                target_url="http://127.0.0.1:9090",
+                scenario="public_app_validation",
+                authorized=True,
+            )
+
+
+class TestHarnessApiTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def post(self, **overrides):
+        request = {
+            "target_url": "http://localhost/dvwa",
+            "scenario": "public_app_validation",
+            "authorized": True,
+        }
+        request.update(overrides)
+        return self.client.post("/api/test-harness/run", json=request)
+
+    def test_api_requires_authorization(self):
+        response = self.post(authorized=False)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("authorization", response.json()["detail"])
+
+    def test_api_rejects_malformed_url(self):
+        response = self.post(target_url="not-a-url")
+        self.assertEqual(response.status_code, 422)
+
+    def test_api_rejects_non_local_target(self):
+        response = self.post(target_url="https://example.com")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("allowlisted", response.json()["detail"])
+
+    def test_generic_scenario_requires_authorization(self):
+        response = self.post(
+            scenario=GENERIC_LOCAL_WEB_SCENARIO,
+            target_url="http://127.0.0.1:8090",
+            authorized=False,
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("authorization", response.json()["detail"])
+
+    def test_generic_scenario_rejects_non_loopback_even_if_allowlisted(self):
+        pipeline = TestHarnessPipeline(
+            mode="fixture",
+            allowed_origins=["https://lab.internal"],
+        )
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            response = self.post(
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                target_url="https://lab.internal",
+            )
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("loopback", response.json()["detail"])
+
+    def test_generic_scenario_requires_an_origin_without_path(self):
+        response = self.post(
+            scenario=GENERIC_LOCAL_WEB_SCENARIO,
+            target_url="http://127.0.0.1:8090/items",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("without a path", response.json()["detail"])
+
+    def test_api_response_schema(self):
+        response = self.post()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            set(body),
+            {
+                "mode",
+                "scenario",
+                "target_url",
+                "finding",
+                "validation_result",
+                "technique",
+                "chain_result",
+                "evidence_refs",
+            },
+        )
+        self.assertTrue({
+            "finding_id",
+            "scan_id",
+            "asset_id",
+            "target",
+            "validation_status",
+        }.issubset(body["finding"]))
+        self.assertTrue({
+            "status",
+            "confidence",
+            "validator",
+            "method",
+            "evidence",
+            "evidence_refs",
+        }.issubset(body["validation_result"]))
+        self.assertTrue({"status", "chains"}.issubset(body["chain_result"]))
+
+    def test_api_rejects_undeclared_payload_fields(self):
+        response = self.post(payload="user-controlled-payload")
+        self.assertEqual(response.status_code, 422)
+
+    def test_browser_cannot_select_local_lab_mode(self):
+        response = self.post(mode="local_lab")
+        self.assertEqual(response.status_code, 422)
+
+    def test_api_returns_clean_lab_connection_error(self):
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=lambda: FailingLabAdapter(),
+        )
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            response = self.post(target_url="http://127.0.0.1:8080")
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("unavailable", response.json()["detail"])
+
+    def test_api_returns_clean_missing_lab_configuration_error(self):
+        def missing_config():
+            raise DVWALabConfigurationError(
+                "missing local-lab configuration"
+            )
+
+        pipeline = TestHarnessPipeline(
+            mode="local_lab",
+            allowed_origins=[],
+            lab_adapter_factory=missing_config,
+        )
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            response = self.post(target_url="http://127.0.0.1:8080")
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("configuration", response.json()["detail"])
+
+    def test_api_returns_clean_generic_local_connection_error(self):
+        def unreachable(_origin):
+            raise LocalTargetConnectionError(
+                "authorized local target is unreachable"
+            )
+
+        pipeline = TestHarnessPipeline(
+            mode="fixture",
+            allowed_origins=[],
+            generic_scenario_runner=unreachable,
+        )
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            response = self.post(
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                target_url="http://127.0.0.1:1",
+            )
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "authorized local target is unreachable",
+        )
+
+    def test_stopped_local_fixture_fails_safely(self):
+        server = LocalVulnerableAppServer()
+        origin = server.start()
+        server.stop()
+
+        pipeline = TestHarnessPipeline(mode="fixture", allowed_origins=[])
+        with self.assertRaisesRegex(
+            LocalTargetConnectionError,
+            "unreachable",
+        ):
+            pipeline.run(
+                target_url=origin,
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=True,
+            )
+
+    def test_health_remains_available(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "healthy"})
+
+    def test_root_serves_temporary_ui(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("OBSIDIAN RECON", response.text)
+        self.assertIn("Temporary local test harness", response.text)
+
+    def test_ui_exposes_generic_local_scenario(self):
+        response = self.client.get("/static/app.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(GENERIC_LOCAL_WEB_SCENARIO, response.text)
+
+
+class GenericLocalWebHarnessApiTests(unittest.TestCase):
+    """Exercise UI API wiring against the controlled real-HTTP fixture."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = LocalVulnerableAppServer()
+        cls.origin = cls.server.start()
+        cls.addClassCleanup(cls.server.stop)
+        cls.client = TestClient(app)
+        pipeline = TestHarnessPipeline(mode="fixture", allowed_origins=[])
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            cls.response = cls.client.post(
+                "/api/test-harness/run",
+                json={
+                    "target_url": cls.origin,
+                    "scenario": GENERIC_LOCAL_WEB_SCENARIO,
+                    "authorized": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+        cls.body = cls.response.json()
+
+    def validation(self, name):
+        return self.body["validations"][name]
+
+    def test_new_scenario_is_accepted_and_returns_three_findings(self):
+        self.assertEqual(self.response.status_code, 200)
+        self.assertEqual(self.body["scenario"], GENERIC_LOCAL_WEB_SCENARIO)
+        self.assertEqual(self.body["mode"], "live_loopback_fixture")
+        self.assertEqual(len(self.body["findings"]), 3)
+        self.assertEqual(len(self.body["validations"]), 3)
+
+    def test_sqli_is_confirmed_and_mapped_to_t1190(self):
+        result = self.validation("sql_injection")
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "generic_http_sqli",
+        )
+        self.assertEqual(result["finding"]["mitre_technique_id"], "T1190")
+
+    def test_xss_is_confirmed_without_fabricated_mitre_mapping(self):
+        result = self.validation("reflected_xss")
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "generic_http_reflected_xss",
+        )
+        self.assertIsNone(result["finding"]["mitre_technique_id"])
+
+    def test_exposure_is_confirmed_with_conservative_capability(self):
+        result = self.validation("exposed_resource")
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "generic_http_exposed_resource",
+        )
+        self.assertEqual(
+            result["finding"]["provides"],
+            ["potential_information_exposure"],
+        )
+
+    def test_attack_chains_and_steps_are_serialized(self):
+        chain_result = self.body["chain_result"]
+        self.assertEqual(chain_result["status"], "confirmed")
+        self.assertEqual(len(chain_result["chains"]), 3)
+        self.assertTrue(all(chain["steps"] for chain in chain_result["chains"]))
+        self.assertEqual(chain_result["chains"], self.body["chains"])
+
+    def test_generic_api_response_schema_is_valid(self):
+        self.assertEqual(
+            set(self.body),
+            {
+                "mode",
+                "scenario",
+                "overall_status",
+                "target_url",
+                "origin",
+                "scan_id",
+                "asset_id",
+                "findings",
+                "validations",
+                "chain_result",
+                "chains",
+            },
+        )
+        self.assertEqual(self.body["overall_status"], "completed")
+        for result in self.body["validations"].values():
+            self.assertTrue({
+                "vulnerability_type",
+                "template_id",
+                "mitre_technique_id",
+                "provides",
+            }.issubset(result["finding"]))
+            self.assertTrue({
+                "status",
+                "confidence",
+                "validator",
+            }.issubset(result["validation_result"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

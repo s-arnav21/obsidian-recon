@@ -16,3 +16,6 @@ node_modules/
 
 # Docker
 *.log
+
+# Runtime/generated scan data
+backend/data/*.json

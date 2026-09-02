@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Temporary local developer test harness for Obsidian Recon"
+    >
+    <title>Obsidian Recon — Test Harness</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <p class="eyebrow">Temporary local test harness</p>
+        <h1>OBSIDIAN RECON</h1>
+        <p class="subtitle">
+          Exercise the existing Finding, validation, MITRE, and attack-chain
+          pipeline using a deterministic fixture, authorized DVWA lab, or the
+          controlled generic loopback demo.
+        </p>
+      </header>
+
+      <section class="panel" aria-labelledby="run-heading">
+        <h2 id="run-heading">Run validation scenario</h2>
+        <form id="harness-form">
+          <label for="target-url">Local or allowlisted lab URL</label>
+          <input
+            id="target-url"
+            name="target_url"
+            type="url"
+            value="http://127.0.0.1:8090"
+            placeholder="http://127.0.0.1:8090"
+            autocomplete="url"
+            required
+          >
+
+          <label for="scenario">Scenario</label>
+          <select id="scenario" name="scenario" required></select>
+
+          <label class="authorization" for="authorized">
+            <input id="authorized" name="authorized" type="checkbox" required>
+            <span>
+              I confirm that I own this target or have explicit authorization
+              to test it.
+            </span>
+          </label>
+
+          <button id="run-button" type="submit">RUN TEST</button>
+        </form>
+        <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="results" class="results" aria-labelledby="results-heading" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Structured backend response</p>
+            <h2 id="results-heading">Results</h2>
+          </div>
+          <span id="result-mode" class="badge"></span>
+        </div>
+        <div id="result-cards" class="card-grid"></div>
+
+        <details class="raw-output">
+          <summary>Raw JSON</summary>
+          <pre id="raw-json"></pre>
+        </details>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

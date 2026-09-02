@@ -1,0 +1,253 @@
+:root {
+  color-scheme: dark;
+  --background: #080b10;
+  --surface: #10151d;
+  --surface-raised: #151c26;
+  --border: #293343;
+  --text: #edf3f8;
+  --muted: #91a0b2;
+  --accent: #50e3b1;
+  --accent-dark: #092c25;
+  --danger: #ff7b89;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 15% 0%, #10201f 0, transparent 28rem),
+    var(--background);
+  color: var(--text);
+  font: 15px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: min(980px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 56px 0 72px;
+}
+
+.masthead {
+  margin-bottom: 28px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 8px;
+  font-size: clamp(2rem, 7vw, 4rem);
+  line-height: 1;
+  letter-spacing: 0.09em;
+}
+
+h2 {
+  margin-bottom: 20px;
+  font-size: 1.15rem;
+}
+
+.eyebrow {
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.subtitle {
+  max-width: 700px;
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.panel,
+.results {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 22px 55px rgb(0 0 0 / 24%);
+}
+
+.panel {
+  padding: 24px;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  margin-top: 8px;
+  color: #c8d2dd;
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+input,
+select,
+button {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+input,
+select {
+  padding: 12px 13px;
+  background: #0a0f16;
+  color: var(--text);
+}
+
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.authorization {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0 6px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.authorization input {
+  width: 17px;
+  height: 17px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+button {
+  margin-top: 8px;
+  padding: 12px 18px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #04110e;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.status-message {
+  min-height: 1.4em;
+  margin: 16px 0 0;
+  color: var(--muted);
+}
+
+.status-message.error {
+  color: var(--danger);
+}
+
+.results {
+  margin-top: 24px;
+  padding: 24px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.section-heading h2 {
+  margin-bottom: 0;
+}
+
+.badge {
+  padding: 5px 9px;
+  border: 1px solid #276f5e;
+  border-radius: 999px;
+  background: var(--accent-dark);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.result-card {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+
+.result-card h3 {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.result-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.raw-output {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.raw-output summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+pre {
+  max-height: 460px;
+  overflow: auto;
+  padding: 16px;
+  border-radius: 8px;
+  background: #070a0f;
+  color: #b9e8da;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 560px) {
+  .shell {
+    width: min(100% - 20px, 980px);
+    padding-top: 32px;
+  }
+
+  .panel,
+  .results {
+    padding: 18px;
+  }
+}
