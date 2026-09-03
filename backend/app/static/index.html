@@ -40,12 +40,13 @@
         <section id="scan-panel" class="tab-panel" aria-labelledby="scan-heading">
           <div class="panel scan-panel">
             <div class="panel-heading">
-              <div><p class="eyebrow">Live local workflow</p><h2 id="scan-heading">Start authorized scan</h2></div>
+              <div><p class="eyebrow">Authorized reconnaissance</p><h2 id="scan-heading">Start authorized scan</h2></div>
               <span class="mode-badge">Real tools</span>
             </div>
             <p class="panel-copy">
               Runs the configured reconnaissance tools and canonical validation pipeline.
-              Only loopback or backend-allowlisted origins are accepted.
+              Loopback targets retain the controlled local workflow. External targets
+              require DNS proof of control for the exact HTTPS origin.
             </p>
             <form id="scan-form">
               <label for="scan-target">Target URL</label>
@@ -58,6 +59,30 @@
             </form>
             <p id="scan-message" class="status-message" role="status" aria-live="polite"></p>
           </div>
+
+          <section id="verification-panel" class="panel verification-panel" aria-labelledby="verification-heading" hidden>
+            <div class="panel-heading compact">
+              <div><p class="eyebrow">Domain control</p><h2 id="verification-heading">Domain verification required</h2></div>
+              <span id="verification-status" class="status-pill queued">Pending</span>
+            </div>
+            <p id="verification-message" class="panel-copy"></p>
+            <div class="verification-grid">
+              <div class="detail-field"><strong>Exact target</strong><code id="verification-origin"></code></div>
+              <div class="detail-field"><strong>TXT name</strong><code id="verification-name"></code></div>
+              <div class="detail-field"><strong>TXT value</strong><code id="verification-value"></code></div>
+              <div class="detail-field"><strong>Challenge expires</strong><span id="verification-expiry"></span></div>
+            </div>
+            <p class="verification-note">
+              You must control DNS for this exact host. Verification does not cover parent
+              domains or sibling subdomains. Provider-owned shared hostnames such as
+              <code>*.netlify.app</code> generally cannot be verified unless you control
+              that DNS zone; use a custom domain you control.
+            </p>
+            <div class="verification-actions">
+              <button id="verify-dns-button" class="secondary-button" type="button">VERIFY DNS</button>
+              <button id="regenerate-verification-button" class="text-button" type="button" hidden>CREATE NEW CHALLENGE</button>
+            </div>
+          </section>
 
           <section id="progress-section" class="panel progress-panel" aria-labelledby="progress-heading" hidden>
             <div class="panel-heading compact">

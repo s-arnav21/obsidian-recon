@@ -8,6 +8,7 @@ from app.api.readiness import router as readiness_router
 from app.api.recon import router as recon_router
 from app.api.scans import router as scans_router
 from app.api.test_harness import router as test_harness_router
+from app.api.target_verifications import router as target_verifications_router
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -17,6 +18,7 @@ app.include_router(readiness_router)
 app.include_router(recon_router)
 app.include_router(scans_router)
 app.include_router(test_harness_router)
+app.include_router(target_verifications_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

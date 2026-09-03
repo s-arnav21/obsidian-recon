@@ -78,6 +78,11 @@ class PrototypeStaticUiTests(unittest.TestCase):
         self.assertIn("T1059.004", html)
         self.assertIn("ATTACK FLOW", html)
         self.assertIn("<th>Risk</th><th>PoC</th>", html)
+        self.assertIn('id="verification-panel"', html)
+        self.assertIn('id="verify-dns-button"', html)
+        self.assertIn('id="verification-name"', html)
+        self.assertIn("*.netlify.app", html)
+        self.assertIn("sibling subdomains", html)
 
     def test_javascript_wires_real_scan_harness_retrieval_and_summary(self):
         javascript = (STATIC_DIR / "app.js").read_text()
@@ -92,6 +97,10 @@ class PrototypeStaticUiTests(unittest.TestCase):
             "Controlled request shapes",
             'requestJson(`/api/scans/${encoded}/findings`)',
             'requestJson(`/api/scans/${encoded}/chains`)',
+            'postJson("/api/target-verifications"',
+            "target_verification_required",
+            "function renderTargetVerification(verification)",
+            '/api/target-verifications/${encodeURIComponent(activeVerificationId)}/verify',
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, javascript)

@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.scanning.nmap import NmapScanner
 from app.scanning.nuclei import NucleiScanner
-from app.scanning.scope import ReconAuthorizationError, ReconScopeError
+from app.scanning.scope import (
+    ReconAuthorizationError,
+    ReconScopeError,
+    TargetVerificationRequiredError,
+)
 from app.scanning.tool_runner import ScannerToolError
 from app.presentation import decorate_pipeline_response
 from app.services.recon_pipeline import ReconPipeline
@@ -29,16 +33,11 @@ class ReconScanRequest(BaseModel):
 
 
 def _configured_pipeline() -> ReconPipeline:
-    allowed_origins = tuple(filter(None, (
-        value.strip()
-        for value in os.getenv("RECON_ALLOWED_ORIGINS", "").split(",")
-    )))
     nmap_path = os.getenv("RECON_NMAP_PATH")
     nuclei_path = os.getenv("RECON_NUCLEI_PATH")
     return ReconPipeline(
         nmap_scanner=NmapScanner(nmap_path) if nmap_path else None,
         nuclei_scanner=NucleiScanner(nuclei_path) if nuclei_path else None,
-        allowed_origins=allowed_origins,
     )
 
 
@@ -57,6 +56,16 @@ def run_recon_scan(
         return decorate_pipeline_response(result, controlled_lab=False)
     except ReconAuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TargetVerificationRequiredError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "target_verification_required",
+                "message": str(exc),
+                "canonical_origin": exc.target.origin,
+                "verification_endpoint": "/api/target-verifications",
+            },
+        ) from exc
     except ReconScopeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ScannerToolError as exc:

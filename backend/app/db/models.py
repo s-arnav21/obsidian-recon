@@ -64,6 +64,38 @@ class ScanORM(Base):
     )
 
 
+class TargetVerificationORM(Base):
+    """Persisted proof-of-control challenge for one exact canonical origin."""
+
+    __tablename__ = "target_verifications"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    origin: Mapped[str] = mapped_column(
+        String(512), nullable=False, unique=True
+    )
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Retained only while a challenge is actionable so the pending DNS
+    # instruction can be retrieved. It is cleared on verification/expiry.
+    challenge_token: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class AssetORM(Base):
     __tablename__ = "assets"
 

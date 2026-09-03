@@ -43,13 +43,15 @@ class ReconScopeTests(unittest.TestCase):
         with self.assertRaises(ReconScopeError):
             authorize_target("https://example.com", authorized=True)
 
-    def test_exact_allowlist_accepts_non_loopback_origin(self):
+    def test_verified_external_origin_requires_public_resolution(self):
         target = authorize_target(
             "https://lab.example.test",
             authorized=True,
-            allowed_origins=["https://lab.example.test/"],
+            ownership_verified=True,
+            address_resolver=lambda _hostname: ("93.184.216.34",),
         )
         self.assertEqual(target.origin, "https://lab.example.test")
+        self.assertEqual(target.resolved_addresses, ("93.184.216.34",))
 
     def test_origin_rejects_credentials_and_paths(self):
         for target in ("http://user:pass@localhost", "http://localhost/path"):
@@ -109,6 +111,26 @@ class NmapAdapterTests(unittest.TestCase):
         )
         self.assertIn("-Pn", calls[0][0])
         self.assertEqual(calls[0][1]["scanner_name"], "nmap")
+
+    def test_verified_external_nmap_uses_prevalidated_address(self):
+        calls = []
+
+        def runner(arguments, **kwargs):
+            calls.append(arguments)
+            return NMAP_XML
+
+        target = authorize_target(
+            "https://app.example.com",
+            authorized=True,
+            ownership_verified=True,
+            address_resolver=lambda _hostname: ("93.184.216.34",),
+        )
+        NmapScanner("/opt/tools/nmap", runner=runner).scan(
+            target,
+            asset_id="asset-1",
+        )
+        self.assertEqual(calls[0][-1], "93.184.216.34")
+        self.assertNotIn("app.example.com", calls[0])
 
 
 class NucleiAdapterTests(unittest.TestCase):

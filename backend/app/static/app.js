@@ -25,10 +25,14 @@ async function requestJson(url, options = {}) {
     throw new Error("The backend returned an unreadable response.");
   }
   if (!response.ok) {
-    const detail = typeof body.detail === "string"
-      ? body.detail
-      : "The backend could not complete this request.";
-    throw new Error(detail);
+    const detail = body.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : detail?.message || "The backend could not complete this request.";
+    const error = new Error(message);
+    error.code = typeof detail === "object" ? detail?.code : null;
+    error.detail = detail;
+    throw error;
   }
   return body;
 }
@@ -44,7 +48,7 @@ function postJson(url, body) {
 function statusClass(value) {
   const normalized = String(value || "unknown").toLowerCase().replaceAll("_", "-");
   if (["confirmed", "completed", "ready"].includes(normalized)) return "success";
-  if (["failed", "rejected", "unavailable"].includes(normalized)) return "danger";
+  if (["failed", "verification-failed", "rejected", "unavailable", "expired"].includes(normalized)) return "danger";
   if (["manual-review", "degraded", "not-configured"].includes(normalized)) return "warning";
   return normalized;
 }
@@ -592,6 +596,39 @@ async function loadPersistedScan(scanId) {
   };
 }
 
+let activeVerificationId = null;
+
+function renderTargetVerification(verification) {
+  activeVerificationId = verification.id || null;
+  const panel = $("#verification-panel");
+  const status = $("#verification-status");
+  status.className = `status-pill ${statusClass(verification.status)}`;
+  status.textContent = displayStatus(verification.status);
+  $("#verification-message").textContent = verification.message || "";
+  $("#verification-origin").textContent = verification.canonical_origin || "—";
+  $("#verification-name").textContent = verification.txt_record_name || "—";
+  $("#verification-value").textContent = verification.txt_record_value || "No longer required";
+  $("#verification-expiry").textContent = verification.expires_at
+    ? new Date(verification.expires_at).toLocaleString()
+    : "—";
+  const verified = verification.status === "verified";
+  const expired = verification.status === "expired";
+  $("#verify-dns-button").hidden = verified || expired;
+  $("#regenerate-verification-button").hidden = !expired;
+  if (verified) {
+    $("#scan-button").textContent = "RUN SECURITY SCAN";
+  }
+  panel.hidden = false;
+}
+
+async function createTargetVerification() {
+  const verification = await postJson("/api/target-verifications", {
+    target_url: $("#scan-target").value,
+  });
+  renderTargetVerification(verification);
+  return verification;
+}
+
 $("#scan-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = $("#scan-button");
@@ -616,10 +653,66 @@ $("#scan-form").addEventListener("submit", async (event) => {
   } catch (error) {
     setProgress("failed");
     message.className = "status-message error";
-    message.textContent = error instanceof Error ? error.message : "Scan failed.";
+    if (error?.code === "target_verification_required") {
+      $("#progress-section").hidden = true;
+      try {
+        await createTargetVerification();
+        message.className = "status-message";
+        message.textContent = "Add the DNS TXT record shown below, then select Verify DNS.";
+      } catch (verificationError) {
+        message.textContent = verificationError instanceof Error
+          ? verificationError.message
+          : "Could not create a DNS verification challenge.";
+      }
+    } else {
+      message.textContent = error instanceof Error ? error.message : "Scan failed.";
+    }
   } finally {
     setButtonLoading(button, false, "START SCAN", "SCANNING…");
   }
+});
+
+$("#verify-dns-button").addEventListener("click", async () => {
+  const button = $("#verify-dns-button");
+  const message = $("#scan-message");
+  if (!activeVerificationId) return;
+  setButtonLoading(button, true, "VERIFY DNS", "VERIFYING…");
+  try {
+    const verification = await postJson(
+      `/api/target-verifications/${encodeURIComponent(activeVerificationId)}/verify`,
+      {},
+    );
+    renderTargetVerification(verification);
+    message.className = verification.status === "verified"
+      ? "status-message"
+      : "status-message error";
+    message.textContent = verification.status === "verified"
+      ? "Domain verified. You can now run the security scan."
+      : verification.message;
+  } catch (error) {
+    message.className = "status-message error";
+    message.textContent = error instanceof Error ? error.message : "DNS verification failed.";
+  } finally {
+    setButtonLoading(button, false, "VERIFY DNS", "VERIFYING…");
+  }
+});
+
+$("#regenerate-verification-button").addEventListener("click", async () => {
+  const message = $("#scan-message");
+  try {
+    const verification = await createTargetVerification();
+    message.className = "status-message";
+    message.textContent = verification.message;
+  } catch (error) {
+    message.className = "status-message error";
+    message.textContent = error instanceof Error ? error.message : "Could not create a new challenge.";
+  }
+});
+
+$("#scan-target").addEventListener("input", () => {
+  activeVerificationId = null;
+  $("#verification-panel").hidden = true;
+  $("#scan-button").textContent = "START SCAN";
 });
 
 $("#demo-form").addEventListener("submit", async (event) => {

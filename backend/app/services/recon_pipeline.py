@@ -6,7 +6,7 @@ import hashlib
 import ipaddress
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from uuid import uuid4
 
 import httpx
@@ -23,7 +23,14 @@ from app.scanning.http_discovery import (
 )
 from app.scanning.models import AssetObservation, ScannerCandidateRecord, ServiceObservation
 from app.scanning.normalizer import normalize_scanner_candidate
-from app.scanning.scope import AuthorizedTarget, authorize_target
+from app.scanning.scope import (
+    AuthorizedTarget,
+    ReconScopeError,
+    authorize_target,
+    is_loopback_host,
+    normalize_origin,
+    resolve_public_target_addresses,
+)
 from app.services.persistence import (
     AssetPersistenceRecord,
     ServicePersistenceRecord,
@@ -32,6 +39,7 @@ from app.services.persistence import (
     persist_validation_outputs,
     start_validation_run,
 )
+from app.services.target_verification import TargetVerificationService
 from app.validation.dispatcher import apply_validation_result, dispatch
 
 
@@ -106,13 +114,37 @@ class ReconPipeline:
         *,
         nmap_scanner: Optional[Any] = None,
         nuclei_scanner: Optional[Any] = None,
-        allowed_origins: Sequence[str] = (),
-        http_client_factory: Any = ScopedReconHttpClient,
+        http_client_factory: Any = None,
+        target_verification_service: Optional[TargetVerificationService] = None,
+        address_resolver: Optional[Callable[[str], Sequence[str]]] = None,
     ) -> None:
         self.nmap_scanner = nmap_scanner
         self.nuclei_scanner = nuclei_scanner
-        self.allowed_origins = tuple(allowed_origins)
-        self.http_client_factory = http_client_factory
+        self.target_verification_service = (
+            target_verification_service or TargetVerificationService()
+        )
+        self.address_resolver = (
+            address_resolver
+            or self.target_verification_service.resolve_addresses
+        )
+        self.http_client_factory = http_client_factory or (
+            lambda target: ScopedReconHttpClient(
+                target,
+                address_resolver=self.address_resolver,
+            )
+        )
+
+    def _revalidate_external_resolution(self, target: AuthorizedTarget) -> None:
+        if not target.resolved_addresses:
+            return
+        current = resolve_public_target_addresses(
+            target.hostname,
+            address_resolver=self.address_resolver,
+        )
+        if set(current) != set(target.resolved_addresses):
+            raise ReconScopeError(
+                "verified target DNS resolution changed during the scan"
+            )
 
     def run(
         self,
@@ -121,10 +153,18 @@ class ReconPipeline:
         authorized: bool,
         session: Session,
     ) -> ReconRun:
+        normalized_target = normalize_origin(target_url)
+        ownership_verified = is_loopback_host(normalized_target.hostname)
+        if not ownership_verified:
+            ownership_verified = self.target_verification_service.is_origin_verified(
+                session,
+                normalized_target.origin,
+            )
         target = authorize_target(
             target_url,
             authorized=authorized,
-            allowed_origins=self.allowed_origins,
+            ownership_verified=ownership_verified,
+            address_resolver=self.address_resolver,
         )
         scan_id = f"scan-{uuid4()}"
         asset_id = _asset_id(scan_id, target.origin)
@@ -139,11 +179,16 @@ class ReconPipeline:
             asset = AssetObservation(
                 asset_id=asset_id,
                 hostname=target.hostname,
-                ip_address=_literal_ip(target.hostname),
+                ip_address=(
+                    target.resolved_addresses[0]
+                    if target.resolved_addresses
+                    else _literal_ip(target.hostname)
+                ),
                 base_url=target.origin,
             )
             services = []
             candidates: Sequence[ScannerCandidateRecord] = ()
+            self._revalidate_external_resolution(target)
             with self.http_client_factory(target) as client:
                 http_service, http_evidence = discover_http_service(
                     target,
@@ -152,6 +197,7 @@ class ReconPipeline:
                 )
                 services.append(http_service)
                 if self.nmap_scanner is not None:
+                    self._revalidate_external_resolution(target)
                     nmap_result = self.nmap_scanner.scan(
                         target,
                         asset_id=asset_id,
@@ -170,6 +216,7 @@ class ReconPipeline:
                         # Small injected test adapters may return observations.
                         services.extend(nmap_result)
                 if self.nuclei_scanner is not None:
+                    self._revalidate_external_resolution(target)
                     candidates = self.nuclei_scanner.scan(
                         target,
                         scan_id=scan_id,

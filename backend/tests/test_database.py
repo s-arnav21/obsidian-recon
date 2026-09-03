@@ -92,6 +92,7 @@ class PersistenceRepositoryTests(unittest.TestCase):
                 "mitre_mappings",
                 "attack_chains",
                 "attack_chain_steps",
+                "target_verifications",
             },
         )
 

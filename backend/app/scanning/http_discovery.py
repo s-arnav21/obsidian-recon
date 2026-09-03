@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from app.scanning.models import ServiceObservation
-from app.scanning.scope import AuthorizedTarget, ReconScopeError
+from app.scanning.scope import (
+    AuthorizedTarget,
+    ReconScopeError,
+    resolve_public_target_addresses,
+)
 
 
 class ScopedReconHttpClient:
     """HTTP client that can communicate with one authorized origin only."""
 
-    def __init__(self, target: AuthorizedTarget, *, timeout_seconds: float = 3.0):
+    def __init__(
+        self,
+        target: AuthorizedTarget,
+        *,
+        timeout_seconds: float = 3.0,
+        address_resolver: Optional[Callable[[str], Sequence[str]]] = None,
+    ):
         self.target = target
+        self.address_resolver = address_resolver
         self._client = httpx.Client(
             follow_redirects=False,
             timeout=timeout_seconds,
@@ -32,6 +43,15 @@ class ScopedReconHttpClient:
             port,
         ) != (self.target.scheme, self.target.hostname, self.target.port):
             raise ReconScopeError("request URL is outside the authorized origin")
+        if self.target.resolved_addresses:
+            current = resolve_public_target_addresses(
+                self.target.hostname,
+                address_resolver=self.address_resolver,
+            )
+            if set(current) != set(self.target.resolved_addresses):
+                raise ReconScopeError(
+                    "verified target DNS resolution changed during the scan"
+                )
         return resolved
 
     def request(self, method: str, url: str, **kwargs: Any) -> Any:

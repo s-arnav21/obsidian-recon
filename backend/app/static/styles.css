@@ -144,6 +144,14 @@ button:disabled { cursor: wait; opacity: .55; }
 .status-message { min-height: 1.4em; margin: 15px 0 0; color: var(--muted); }
 .status-message.error { color: var(--danger); }
 
+.verification-panel { margin-top: 14px; }
+.verification-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.verification-grid .detail-field { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.verification-grid code { color: var(--accent); overflow-wrap: anywhere; user-select: all; }
+.verification-note { margin: 16px 0 0; color: var(--muted); font-size: .82rem; }
+.verification-note code { color: #b9c7d3; }
+.verification-actions { display: flex; align-items: center; gap: 14px; margin-top: 17px; }
+
 .progress-panel { margin-top: 14px; }
 .progress-note { margin: 10px 0 16px; font-size: .82rem; }
 .stage-list { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 0; padding: 0; list-style: none; counter-reset: stages; }
@@ -262,6 +270,8 @@ footer { padding-top: 28px; color: #5f7180; font-size: .75rem; text-align: cente
   .lookup-form { display: grid; }
   .secondary-button { width: 100%; }
   .detail-grid { grid-template-columns: 1fr; }
+  .verification-grid { grid-template-columns: 1fr; }
+  .verification-actions { align-items: stretch; flex-direction: column; }
   .detection-method-grid { grid-template-columns: 1fr; }
   .proof-panel { width: 76vw; }
 }

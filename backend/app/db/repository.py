@@ -18,6 +18,7 @@ from app.db.models import (
     MitreMappingORM,
     ScanORM,
     ServiceORM,
+    TargetVerificationORM,
     ValidationORM,
 )
 from app.models.attack_chain import AttackChain
@@ -90,6 +91,68 @@ class PersistenceRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    def create_target_verification(
+        self,
+        *,
+        origin: str,
+        hostname: str,
+        token_digest: str,
+        challenge_token: str,
+        expires_at: datetime,
+        verification_id: Optional[str] = None,
+    ) -> TargetVerificationORM:
+        record = TargetVerificationORM(
+            id=verification_id or _new_id("target-verification"),
+            origin=origin,
+            hostname=hostname,
+            token_digest=token_digest,
+            challenge_token=challenge_token,
+            status="pending",
+            expires_at=expires_at,
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def get_target_verification(
+        self,
+        verification_id: str,
+    ) -> Optional[TargetVerificationORM]:
+        return self.session.get(TargetVerificationORM, verification_id)
+
+    def latest_target_verification(
+        self,
+        origin: str,
+    ) -> Optional[TargetVerificationORM]:
+        statement = (
+            select(TargetVerificationORM)
+            .where(TargetVerificationORM.origin == origin)
+            .order_by(
+                TargetVerificationORM.created_at.desc(),
+                TargetVerificationORM.id.desc(),
+            )
+            .limit(1)
+        )
+        return self.session.scalar(statement)
+
+    def verified_target_verification(
+        self,
+        origin: str,
+    ) -> Optional[TargetVerificationORM]:
+        statement = (
+            select(TargetVerificationORM)
+            .where(
+                TargetVerificationORM.origin == origin,
+                TargetVerificationORM.status == "verified",
+            )
+            .order_by(
+                TargetVerificationORM.verified_at.desc(),
+                TargetVerificationORM.created_at.desc(),
+            )
+            .limit(1)
+        )
+        return self.session.scalar(statement)
 
     def update_scan_status(
         self,

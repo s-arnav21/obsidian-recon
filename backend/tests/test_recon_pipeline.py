@@ -355,7 +355,15 @@ class ReconApiTests(unittest.TestCase):
             "target_url": "https://example.com",
             "authorized": True,
         })
-        self.assertEqual(external.status_code, 400)
+        self.assertEqual(external.status_code, 403)
+        self.assertEqual(
+            external.json()["detail"]["code"],
+            "target_verification_required",
+        )
+        self.assertEqual(
+            external.json()["detail"]["canonical_origin"],
+            "https://example.com",
+        )
 
     def test_api_rejects_malformed_and_extra_input(self):
         malformed = self.client.post("/api/scans/run", json={

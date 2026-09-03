@@ -131,7 +131,11 @@ class NmapScanner:
                 str(target.port),
                 "-oX",
                 "-",
-                target.hostname,
+                (
+                    target.resolved_addresses[0]
+                    if target.resolved_addresses
+                    else target.hostname
+                ),
             ],
             timeout_seconds=self.timeout_seconds,
             scanner_name="nmap",
