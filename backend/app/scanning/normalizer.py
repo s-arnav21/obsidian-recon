@@ -8,12 +8,14 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from app.models.finding import Finding, ValidationStatus
+from app.scanning.models import ScannerCandidateRecord
 
 
 GENERIC_SQLI_VALIDATOR_ID = "generic-http-sqli"
 GENERIC_REFLECTED_XSS_VALIDATOR_ID = "generic-http-reflected-xss"
 GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID = "generic-http-exposed-resource"
 GENERIC_COMMAND_EXECUTION_VALIDATOR_ID = "generic-http-command-execution"
+RECON_MANUAL_REVIEW_VALIDATOR_ID = "recon-manual-review"
 SUPPORTED_REQUEST_SHAPES = frozenset({
     ("GET", "query"),
     ("POST", "form"),
@@ -340,4 +342,107 @@ def normalize_exposed_resource_record(
         http_method="GET",
         parameter_name=None,
         parameter_location=None,
+    )
+
+
+def _candidate_finding(
+    record: ScannerCandidateRecord,
+    *,
+    vulnerability_type: str,
+    validator_id: Optional[str] = None,
+    http_method: Optional[str] = None,
+    parameter_name: Optional[str] = None,
+    parameter_location: Optional[str] = None,
+) -> Finding:
+    """Preserve a candidate even when validation context is incomplete."""
+    target = _normalize_target(record.target)
+    endpoint = (
+        _normalize_endpoint(record.endpoint)
+        if record.endpoint is not None
+        else None
+    )
+    evidence, evidence_refs = _validate_evidence(record)
+    observed_at = record.observed_at or datetime.now(timezone.utc).isoformat()
+    return Finding(
+        finding_id=_required_text(record.record_id, "record_id"),
+        scan_id=_required_text(record.scan_id, "scan_id"),
+        asset_id=_required_text(record.asset_id, "asset_id"),
+        target=target.origin,
+        host=target.host,
+        port=target.port,
+        protocol=target.protocol,
+        endpoint=endpoint,
+        source=_required_text(record.scanner_name, "scanner_name"),
+        template_id=_required_text(
+            record.scanner_template_id,
+            "scanner_template_id",
+        ),
+        vulnerability_type=vulnerability_type,
+        severity=_required_text(record.severity, "severity").lower(),
+        validation_status=ValidationStatus.DETECTED,
+        validation_confidence=0.2,
+        evidence=evidence,
+        evidence_refs=evidence_refs,
+        observed_at=observed_at,
+        raw_finding_ref=record.record_id,
+        validator_id=validator_id,
+        http_method=http_method,
+        parameter_name=parameter_name,
+        parameter_location=parameter_location,
+    )
+
+
+def normalize_scanner_candidate(record: ScannerCandidateRecord) -> Finding:
+    """Normalize a real scanner candidate without guessing missing context.
+
+    A registered validator is selected only when the scanner explicitly supplies
+    every field required by that validator. Command-execution candidates remain
+    manual-review-only outside the controlled synthetic fixture.
+    """
+    if not isinstance(record, ScannerCandidateRecord):
+        raise TypeError("record must be a ScannerCandidateRecord")
+    normalized_type = _normalized_type_name(record.vulnerability_type)
+    method = record.http_method.strip().upper() if record.http_method else None
+    location = (
+        record.parameter_location.strip().lower()
+        if record.parameter_location
+        else None
+    )
+    parameter = record.parameter_name.strip() if record.parameter_name else None
+    complete_parameter_context = bool(
+        record.endpoint
+        and method
+        and location
+        and parameter
+        and (method, location) in SUPPORTED_REQUEST_SHAPES
+    )
+
+    validator_id: Optional[str] = RECON_MANUAL_REVIEW_VALIDATOR_ID
+    canonical_type = normalized_type
+    if normalized_type in SQLI_TYPES:
+        canonical_type = "sql_injection"
+        if complete_parameter_context:
+            validator_id = GENERIC_SQLI_VALIDATOR_ID
+    elif normalized_type in REFLECTED_XSS_TYPES:
+        canonical_type = "reflected_xss"
+        if complete_parameter_context:
+            validator_id = GENERIC_REFLECTED_XSS_VALIDATOR_ID
+    elif normalized_type in EXPOSURE_TYPE_MAP:
+        canonical_type = EXPOSURE_TYPE_MAP[normalized_type]
+        if record.endpoint:
+            validator_id = GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID
+            method = "GET"
+            location = None
+            parameter = None
+    elif normalized_type in COMMAND_EXECUTION_TYPES:
+        canonical_type = "command_execution"
+        # Deliberately manual review: active command execution is fixture-only.
+
+    return _candidate_finding(
+        record,
+        vulnerability_type=canonical_type,
+        validator_id=validator_id,
+        http_method=method,
+        parameter_name=parameter,
+        parameter_location=location,
     )

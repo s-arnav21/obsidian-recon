@@ -23,6 +23,16 @@ class ValidationPersistenceRecord:
 
 
 @dataclass(frozen=True)
+class AssetPersistenceRecord:
+    """Explicit discovery context that cannot be derived from a Finding."""
+
+    asset_id: str
+    hostname: Optional[str] = None
+    ip_address: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class ServicePersistenceRecord:
     """Optional recon service observation associated with the same scan."""
 
@@ -45,6 +55,7 @@ def persist_validation_run(
     findings: Sequence[Finding],
     validations: Sequence[ValidationPersistenceRecord],
     attack_chains: Sequence[AttackChain],
+    assets: Sequence[AssetPersistenceRecord] = (),
     services: Sequence[ServicePersistenceRecord] = (),
 ) -> str:
     """Create and persist one completed validation run."""
@@ -62,6 +73,7 @@ def persist_validation_run(
             findings=findings,
             validations=validations,
             attack_chains=attack_chains,
+            assets=assets,
             services=services,
         )
     except Exception as exc:
@@ -135,6 +147,7 @@ def persist_validation_outputs(
     findings: Sequence[Finding],
     validations: Sequence[ValidationPersistenceRecord],
     attack_chains: Sequence[AttackChain],
+    assets: Sequence[AssetPersistenceRecord] = (),
     services: Sequence[ServicePersistenceRecord] = (),
 ) -> str:
     """Persist completed domain outputs into an already-started scan."""
@@ -151,11 +164,22 @@ def persist_validation_outputs(
         if repository.get_scan(scan_id) is None:
             raise ValueError("scan must be started before outputs are persisted")
 
-        assets = {}
+        persisted_assets = {}
+        for asset in assets:
+            if asset.asset_id in persisted_assets:
+                raise ValueError("asset identifiers must be unique")
+            persisted_assets[asset.asset_id] = repository.persist_asset(
+                scan_id=scan_id,
+                asset_id=asset.asset_id,
+                hostname=asset.hostname,
+                ip_address=asset.ip_address,
+                base_url=asset.base_url,
+            )
+
         for finding in findings:
-            existing = assets.get(finding.asset_id)
+            existing = persisted_assets.get(finding.asset_id)
             if existing is None:
-                assets[finding.asset_id] = repository.persist_asset(
+                persisted_assets[finding.asset_id] = repository.persist_asset(
                     scan_id=scan_id,
                     asset_id=finding.asset_id,
                     hostname=finding.host,
@@ -163,7 +187,7 @@ def persist_validation_outputs(
                 )
 
         for service in services:
-            if service.asset_id not in assets:
+            if service.asset_id not in persisted_assets:
                 raise ValueError("service asset must belong to the persisted scan")
             repository.persist_service(
                 scan_id=scan_id,
