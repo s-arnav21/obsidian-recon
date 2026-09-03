@@ -1,0 +1,293 @@
+import json
+import unittest
+from pathlib import Path
+
+from app.presentation.security import decorate_pipeline_response
+from app.validation.command_execution import (
+    BASELINE_DIAGNOSTIC_TOKEN,
+    CONTROL_PROBE_TOKEN,
+    EXECUTION_PROBE_TOKEN,
+)
+
+
+def finding(
+    finding_id,
+    vulnerability_type,
+    *,
+    endpoint,
+    method="GET",
+    parameter="id",
+    location="query",
+    technique_id=None,
+    technique_name=None,
+    tactic=None,
+    requires=None,
+    provides=None,
+    severity="high",
+):
+    return {
+        "finding_id": finding_id,
+        "scan_id": "scan-presentation",
+        "asset_id": "asset-presentation",
+        "target": "http://127.0.0.1:8090",
+        "endpoint": endpoint,
+        "http_method": method,
+        "parameter_name": parameter,
+        "parameter_location": location,
+        "vulnerability_type": vulnerability_type,
+        "severity": severity,
+        "validation_status": "confirmed",
+        "validation_confidence": 0.9,
+        "mitre_technique_id": technique_id,
+        "mitre_technique_name": technique_name,
+        "mitre_tactic": tactic,
+        "requires_any": requires or [],
+        "requires_all": [],
+        "provides": provides or [],
+    }
+
+
+def validation(method, evidence):
+    return {
+        "status": "confirmed",
+        "confidence": 0.9,
+        "validator": "existing_validator",
+        "method": method,
+        "evidence": evidence,
+    }
+
+
+class SecurityPresentationTests(unittest.TestCase):
+    def setUp(self):
+        self.sqli = finding(
+            "finding-sqli",
+            "sql_injection",
+            endpoint="/items",
+            technique_id="T1190",
+            technique_name="Exploit Public-Facing Application",
+            tactic="Initial Access",
+            requires=["discovered_services"],
+            provides=["application_compromise", "possible_database_access"],
+        )
+        self.sqli_validation = validation(
+            "boolean-response-differential SQLi",
+            {
+                "baseline_status": 200,
+                "true_probe_status": 200,
+                "false_probe_status": 200,
+                "baseline_true_similarity": 1.0,
+                "baseline_false_similarity": 0.25,
+                "true_false_similarity": 0.25,
+                "similarity_delta": 0.75,
+                "decision": "confirmed",
+                "reason": "boolean_response_differential_confirmed",
+            },
+        )
+
+    def decorate(self, finding_value, validation_value, *, controlled=True, chains=None):
+        return decorate_pipeline_response(
+            {
+                "findings": [finding_value],
+                "validations": [validation_value],
+                "chains": chains or [],
+            },
+            controlled_lab=controlled,
+        )
+
+    def test_controlled_sqli_poc_uses_existing_fixed_request_shapes(self):
+        result = self.decorate(self.sqli, self.sqli_validation)
+        presentation = result["finding_presentations"][0]
+        requests = [item["request"] for item in presentation["poc"]["requests"]]
+
+        self.assertEqual(presentation["poc"]["label"], "Controlled Lab")
+        self.assertEqual(requests, [
+            "GET /items?id=1",
+            "GET /items?id=1+AND+1%3D1",
+            "GET /items?id=1+AND+1%3D2",
+        ])
+        self.assertEqual(presentation["mitre"], {
+            "technique_id": "T1190",
+            "technique_name": "Exploit Public-Facing Application",
+            "tactic": "Initial Access",
+        })
+        self.assertEqual(presentation["risk"]["rating"], "High")
+        self.assertEqual(presentation["risk"]["cia"]["confidentiality"], "High")
+        self.assertEqual(presentation["risk"]["cvss"], "Not supplied")
+
+    def test_real_scan_does_not_fabricate_or_disclose_reproduction_requests(self):
+        result = self.decorate(self.sqli, self.sqli_validation, controlled=False)
+        poc = result["finding_presentations"][0]["poc"]
+
+        self.assertEqual(poc["requests"], [])
+        self.assertEqual(
+            poc["request_note"],
+            "Detailed PoC request not available from the observed evidence.",
+        )
+
+    def test_risk_rating_is_deterministic(self):
+        first = self.decorate(self.sqli, self.sqli_validation)
+        second = self.decorate(self.sqli, self.sqli_validation)
+        self.assertEqual(
+            first["finding_presentations"][0]["risk"],
+            second["finding_presentations"][0]["risk"],
+        )
+
+    def test_command_execution_poc_is_explicitly_synthetic_and_critical(self):
+        command = finding(
+            "finding-command",
+            "command_execution",
+            endpoint="/controlled/command",
+            method="POST",
+            parameter="diagnostic",
+            location="form",
+            technique_id="T1059.004",
+            technique_name="Command and Scripting Interpreter: Unix Shell",
+            tactic="Execution",
+            requires=["application_compromise"],
+            provides=["command_execution"],
+            severity="critical",
+        )
+        command_validation = validation(
+            "synthetic-unix-shell-marker-differential",
+            {
+                "baseline_status": 200,
+                "probe_status": 200,
+                "control_status": 200,
+                "baseline_marker_present": False,
+                "execution_marker_present": True,
+                "control_marker_present": False,
+                "decision": "confirmed",
+                "reason": "unique_synthetic_execution_marker_observed",
+            },
+        )
+        result = self.decorate(command, command_validation)
+        presentation = result["finding_presentations"][0]
+        serialized_requests = json.dumps(presentation["poc"]["requests"])
+
+        for fixed_token in (
+            BASELINE_DIAGNOSTIC_TOKEN,
+            EXECUTION_PROBE_TOKEN,
+            CONTROL_PROBE_TOKEN,
+        ):
+            self.assertIn(fixed_token, serialized_requests)
+        self.assertEqual(presentation["risk"]["rating"], "Critical")
+        self.assertIn("No arbitrary operating-system command", presentation["poc"]["safety_note"])
+        self.assertIn("Potential impact", presentation["risk"]["scope_note"])
+
+    def test_unmapped_xss_and_disclosure_keep_honest_mitre_and_cia_output(self):
+        cases = (
+            ("reflected_xss", "/reflect", "Moderate"),
+            ("information_disclosure", "/.env", "High"),
+        )
+        for vulnerability_type, endpoint, confidentiality in cases:
+            with self.subTest(vulnerability_type=vulnerability_type):
+                item = finding(
+                    f"finding-{vulnerability_type}",
+                    vulnerability_type,
+                    endpoint=endpoint,
+                    technique_id=None,
+                    provides=["potential_information_exposure"] if vulnerability_type == "information_disclosure" else [],
+                )
+                result = self.decorate(item, validation("existing deterministic method", {"decision": "confirmed"}))
+                presentation = result["finding_presentations"][0]
+                self.assertIsNone(presentation["mitre"])
+                self.assertEqual(presentation["risk"]["cia"]["confidentiality"], confidentiality)
+
+    def test_attack_flow_explains_capability_dependencies_and_cumulative_risk(self):
+        command = finding(
+            "finding-command",
+            "command_execution",
+            endpoint="/controlled/command",
+            method="POST",
+            parameter="diagnostic",
+            location="form",
+            technique_id="T1059.004",
+            technique_name="Command and Scripting Interpreter: Unix Shell",
+            tactic="Execution",
+            requires=["application_compromise"],
+            provides=["command_execution"],
+            severity="critical",
+        )
+        command_validation = validation(
+            "synthetic-unix-shell-marker-differential",
+            {"decision": "confirmed", "execution_marker_present": True},
+        )
+        chain = {
+            "chain_id": "chain-sqli-command",
+            "status": "confirmed",
+            "confidence": 0.9,
+            "steps": [
+                {
+                    "step_number": 1,
+                    "finding_id": "finding-service",
+                    "vulnerability_type": "service_scan",
+                    "provides": ["discovered_services"],
+                },
+                {
+                    "step_number": 2,
+                    **self.sqli,
+                },
+                {
+                    "step_number": 3,
+                    **command,
+                },
+            ],
+        }
+        result = decorate_pipeline_response(
+            {
+                "findings": [self.sqli, command],
+                "validations": [self.sqli_validation, command_validation],
+                "chains": [chain],
+            },
+            controlled_lab=True,
+        )
+        path = result["attack_flow"]["multi_stage_paths"][0]
+
+        self.assertEqual([item["capability"] for item in path["dependencies"]], [
+            "discovered_services",
+            "application_compromise",
+        ])
+        self.assertEqual(path["cumulative_risk"], "Critical")
+        self.assertEqual(path["cumulative_capabilities"], [
+            "discovered_services",
+            "application_compromise",
+            "possible_database_access",
+            "command_execution",
+        ])
+        self.assertTrue(path["potential_business_impact"])
+
+    def test_single_action_chain_is_presented_as_standalone(self):
+        xss = finding(
+            "finding-xss",
+            "reflected_xss",
+            endpoint="/reflect",
+            technique_id=None,
+        )
+        xss_validation = validation(
+            "inert-html-reflection",
+            {"marker_reflected": True, "decision": "confirmed"},
+        )
+        result = self.decorate(
+            xss,
+            xss_validation,
+            chains=[{
+                "chain_id": "chain-xss",
+                "status": "confirmed",
+                "steps": [{"step_number": 1, **xss}],
+            }],
+        )
+
+        self.assertEqual(result["attack_flow"]["multi_stage_paths"], [])
+        standalone = result["attack_flow"]["standalone_findings"]
+        self.assertEqual(len(standalone), 1)
+        self.assertIn("standalone", standalone[0]["impact_summary"])
+
+    def test_presentation_layer_contains_no_execution_primitive(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "presentation" / "security.py").read_text()
+        for forbidden in ("os.system", "subprocess", "shell=True", "eval(", "exec("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+
+if __name__ == "__main__":
+    unittest.main()

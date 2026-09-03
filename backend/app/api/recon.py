@@ -14,6 +14,7 @@ from app.scanning.nmap import NmapScanner
 from app.scanning.nuclei import NucleiScanner
 from app.scanning.scope import ReconAuthorizationError, ReconScopeError
 from app.scanning.tool_runner import ScannerToolError
+from app.presentation import decorate_pipeline_response
 from app.services.recon_pipeline import ReconPipeline
 
 
@@ -48,11 +49,12 @@ def run_recon_scan(
     pipeline: ReconPipeline = Depends(_configured_pipeline),
 ) -> Dict[str, Any]:
     try:
-        return pipeline.run(
+        result = pipeline.run(
             target_url=str(request.target_url),
             authorized=request.authorized,
             session=session,
         ).to_dict()
+        return decorate_pipeline_response(result, controlled_lab=False)
     except ReconAuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ReconScopeError as exc:

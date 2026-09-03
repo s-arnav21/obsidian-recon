@@ -15,6 +15,7 @@ from app.integrations.labs.dvwa import (
     DVWALabConnectionError,
     DVWALabSetupError,
 )
+from app.presentation import decorate_pipeline_response
 from app.services.generic_local_web_validation import LocalTargetConnectionError
 from app.services.test_harness import (
     AuthorizationRequiredError,
@@ -51,12 +52,13 @@ def run_test_harness(
     session: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     try:
-        return pipeline.run(
+        result = pipeline.run(
             target_url=request.target_url,
             scenario=request.scenario,
             authorized=request.authorized,
             persistence_session=session,
         )
+        return decorate_pipeline_response(result, controlled_lab=True)
     except AuthorizationRequiredError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TargetNotAllowedError as exc:

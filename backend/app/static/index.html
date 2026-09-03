@@ -3,72 +3,144 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta
-      name="description"
-      content="Temporary local developer test harness for Obsidian Recon"
-    >
-    <title>Obsidian Recon — Test Harness</title>
+    <meta name="description" content="Obsidian Recon authorized security validation prototype">
+    <title>Obsidian Recon — Prototype</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <main class="shell">
+    <div class="app-shell">
       <header class="masthead">
-        <p class="eyebrow">Temporary local test harness</p>
-        <h1>OBSIDIAN RECON</h1>
-        <p class="subtitle">
-          Exercise the existing Finding, validation, MITRE, and attack-chain
-          pipeline using a deterministic fixture, authorized DVWA lab, or the
-          controlled generic loopback demo.
-        </p>
+        <div>
+          <p class="eyebrow">Authorized security validation prototype</p>
+          <h1 aria-label="OBSIDIAN RECON">OBSIDIAN <span>RECON</span></h1>
+          <p class="subtitle">
+            Reconnaissance, vulnerability verification, MITRE ATT&amp;CK mapping,
+            proof-of-concept evidence, and attack-path analysis.
+          </p>
+        </div>
+        <div class="environment-badge"><span></span> Local prototype</div>
       </header>
 
-      <section class="panel" aria-labelledby="run-heading">
-        <h2 id="run-heading">Run validation scenario</h2>
-        <form id="harness-form">
-          <label for="target-url">Local or allowlisted lab URL</label>
-          <input
-            id="target-url"
-            name="target_url"
-            type="url"
-            value="http://127.0.0.1:8090"
-            placeholder="http://127.0.0.1:8090"
-            autocomplete="url"
-            required
-          >
-
-          <label for="scenario">Scenario</label>
-          <select id="scenario" name="scenario" required></select>
-
-          <label class="authorization" for="authorized">
-            <input id="authorized" name="authorized" type="checkbox" required>
-            <span>
-              I confirm that I own this target or have explicit authorization
-              to test it.
-            </span>
-          </label>
-
-          <button id="run-button" type="submit">RUN TEST</button>
-        </form>
-        <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
-      </section>
-
-      <section id="results" class="results" aria-labelledby="results-heading" hidden>
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Structured backend response</p>
-            <h2 id="results-heading">Results</h2>
-          </div>
-          <span id="result-mode" class="badge"></span>
+      <section class="health-strip" aria-labelledby="health-heading">
+        <div class="health-heading">
+          <div><p class="eyebrow">System readiness</p><h2 id="health-heading">Components</h2></div>
+          <button id="refresh-health" class="text-button" type="button">Refresh</button>
         </div>
-        <div id="result-cards" class="card-grid"></div>
-
-        <details class="raw-output">
-          <summary>Raw JSON</summary>
-          <pre id="raw-json"></pre>
-        </details>
+        <div id="health-components" class="health-grid" aria-live="polite">
+          <div class="health-item"><span class="health-dot unknown"></span><span>Checking services…</span></div>
+        </div>
       </section>
-    </main>
 
+      <nav class="tabs" aria-label="Prototype modes">
+        <button class="tab is-active" type="button" data-tab="scan-panel" aria-selected="true">Real reconnaissance scan</button>
+        <button class="tab" type="button" data-tab="demo-panel" aria-selected="false">Controlled Lab Demonstration</button>
+      </nav>
+
+      <main>
+        <section id="scan-panel" class="tab-panel" aria-labelledby="scan-heading">
+          <div class="panel scan-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Live local workflow</p><h2 id="scan-heading">Start authorized scan</h2></div>
+              <span class="mode-badge">Real tools</span>
+            </div>
+            <p class="panel-copy">
+              Runs the configured reconnaissance tools and canonical validation pipeline.
+              Only loopback or backend-allowlisted origins are accepted.
+            </p>
+            <form id="scan-form">
+              <label for="scan-target">Target URL</label>
+              <input id="scan-target" name="target_url" type="url" value="http://127.0.0.1:8090" autocomplete="url" required>
+              <label class="authorization" for="scan-authorized">
+                <input id="scan-authorized" name="authorized" type="checkbox" required>
+                <span>I confirm that I own this target or have explicit authorization to test it.</span>
+              </label>
+              <button id="scan-button" class="primary-button" type="submit">START SCAN</button>
+            </form>
+            <p id="scan-message" class="status-message" role="status" aria-live="polite"></p>
+          </div>
+
+          <section id="progress-section" class="panel progress-panel" aria-labelledby="progress-heading" hidden>
+            <div class="panel-heading compact">
+              <div><p class="eyebrow">Synchronous pipeline</p><h2 id="progress-heading">Scan progress</h2></div>
+              <span id="overall-progress" class="status-pill queued">Queued</span>
+            </div>
+            <p class="progress-note">Stage-level events are not streamed yet. Stages complete together when the backend returns.</p>
+            <ol id="progress-stages" class="stage-list"></ol>
+          </section>
+        </section>
+
+        <section id="demo-panel" class="tab-panel" aria-labelledby="demo-heading" hidden>
+          <div class="panel scan-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Temporary local test harness</p><h2 id="demo-heading">Controlled Lab Demonstration</h2></div>
+              <span class="mode-badge fixture">Test harness</span>
+            </div>
+            <p class="panel-copy">
+              Preserves the existing controlled validation scenarios, including the
+              known T1190 → T1059.004 chain when returned by the backend. Fixed,
+              non-destructive probes are used only against the authorized loopback fixture.
+            </p>
+            <form id="demo-form">
+              <label for="demo-target">Controlled target URL</label>
+              <input id="demo-target" name="target_url" type="url" value="http://127.0.0.1:8090" autocomplete="url" required>
+              <label for="scenario">Scenario</label>
+              <select id="scenario" name="scenario" required></select>
+              <label class="authorization" for="demo-authorized">
+                <input id="demo-authorized" name="authorized" type="checkbox" required>
+                <span>I confirm that this controlled target is authorized for testing.</span>
+              </label>
+              <button id="demo-button" class="primary-button" type="submit">RUN CONTROLLED DEMO</button>
+            </form>
+            <p id="demo-message" class="status-message" role="status" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <section id="results" class="results" aria-labelledby="results-heading" hidden>
+          <div class="panel-heading">
+            <div><p class="eyebrow">Evidence-backed output</p><h2 id="results-heading">Scan results</h2></div>
+            <span id="result-mode" class="status-pill"></span>
+          </div>
+          <div id="summary-cards" class="summary-grid"></div>
+
+          <section class="result-section" aria-labelledby="findings-heading">
+            <div class="section-title"><h3 id="findings-heading">Findings</h3><span id="finding-count" class="count-badge">0</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Finding</th><th>Severity</th><th>Endpoint</th>
+                  <th>Validation</th><th>Confidence</th><th>MITRE ATT&amp;CK</th>
+                  <th>Risk</th><th>PoC</th>
+                </tr></thead>
+                <tbody id="findings-body"></tbody>
+              </table>
+            </div>
+            <p id="findings-empty" class="empty-state" hidden>No candidate findings were returned.</p>
+          </section>
+
+          <section class="result-section" aria-labelledby="chains-heading">
+            <div class="section-title attack-flow-title"><div><p class="eyebrow">Evidence-supported progression</p><h3 id="chains-heading">ATTACK FLOW</h3></div><span id="chain-count" class="count-badge">0</span></div>
+            <div id="chain-list" class="chain-list"></div>
+            <p id="chains-empty" class="empty-state" hidden>No evidence-supported attack path was generated.</p>
+          </section>
+
+          <details class="raw-output">
+            <summary>View raw response</summary>
+            <pre id="raw-json"></pre>
+          </details>
+        </section>
+
+        <section class="panel lookup-panel" aria-labelledby="lookup-heading">
+          <div><p class="eyebrow">Persisted results</p><h2 id="lookup-heading">Open scan by ID</h2></div>
+          <form id="lookup-form" class="lookup-form">
+            <label class="sr-only" for="scan-id">Scan ID</label>
+            <input id="scan-id" name="scan_id" type="text" placeholder="scan-…" required>
+            <button id="lookup-button" class="secondary-button" type="submit">LOAD SCAN</button>
+          </form>
+          <p id="lookup-message" class="status-message" role="status" aria-live="polite"></p>
+        </section>
+      </main>
+      <footer>Obsidian Recon · Local authorized-use prototype</footer>
+    </div>
     <script src="/static/app.js" defer></script>
   </body>
 </html>

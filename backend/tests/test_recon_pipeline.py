@@ -361,6 +361,12 @@ class ReconApiTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["findings"][0]["mitre_technique_id"], "T1190")
+        self.assertEqual(body["presentation_mode"], "real_scan")
+        self.assertEqual(
+            body["finding_presentations"][0]["poc"]["requests"],
+            [],
+        )
+        self.assertIn("attack_flow", body)
         scan_id = body["scan_id"]
         self.assertEqual(self.client.get(f"/api/scans/{scan_id}").status_code, 200)
         self.assertEqual(

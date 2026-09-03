@@ -409,6 +409,9 @@ class TestHarnessApiTests(unittest.TestCase):
                 "technique",
                 "chain_result",
                 "evidence_refs",
+                "finding_presentations",
+                "attack_flow",
+                "presentation_mode",
             },
         )
         self.assertTrue({
@@ -427,6 +430,14 @@ class TestHarnessApiTests(unittest.TestCase):
             "evidence_refs",
         }.issubset(body["validation_result"]))
         self.assertTrue({"status", "chains"}.issubset(body["chain_result"]))
+        self.assertEqual(
+            body["finding_presentations"][0]["poc"]["label"],
+            "Evidence Only",
+        )
+        self.assertEqual(
+            body["finding_presentations"][0]["poc"]["requests"],
+            [],
+        )
 
     def test_api_rejects_undeclared_payload_fields(self):
         response = self.post(payload="user-controlled-payload")
@@ -664,9 +675,15 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
                 "validations",
                 "chain_result",
                 "chains",
+                "finding_presentations",
+                "attack_flow",
+                "presentation_mode",
             },
         )
         self.assertEqual(self.body["overall_status"], "completed")
+        self.assertEqual(self.body["presentation_mode"], "controlled_lab")
+        self.assertEqual(len(self.body["finding_presentations"]), 4)
+        self.assertTrue(self.body["attack_flow"]["multi_stage_paths"])
         for result in self.body["validations"].values():
             self.assertTrue({
                 "vulnerability_type",
@@ -679,6 +696,34 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
                 "confidence",
                 "validator",
             }.issubset(result["validation_result"]))
+
+    def test_generic_api_exposes_controlled_poc_and_cumulative_chain_risk(self):
+        presentations = {
+            item["vulnerability_type"]: item
+            for item in self.body["finding_presentations"]
+        }
+        self.assertEqual(
+            presentations["sql_injection"]["poc"]["label"],
+            "Controlled Lab",
+        )
+        self.assertEqual(
+            len(presentations["sql_injection"]["poc"]["requests"]),
+            3,
+        )
+        self.assertEqual(
+            presentations["command_execution"]["risk"]["rating"],
+            "Critical",
+        )
+        progression = next(
+            path
+            for path in self.body["attack_flow"]["multi_stage_paths"]
+            if "command_execution" in path["cumulative_capabilities"]
+        )
+        self.assertEqual(progression["cumulative_risk"], "Critical")
+        self.assertTrue(any(
+            dependency["capability"] == "application_compromise"
+            for dependency in progression["dependencies"]
+        ))
 
 
 if __name__ == "__main__":
