@@ -12,9 +12,10 @@ from app.validation.dispatcher import apply_validation_result, dispatch
 
 
 class FakeResponse:
-    def __init__(self, text, status_code=200):
+    def __init__(self, text, status_code=200, elapsed_seconds=0.01):
         self.text = text
         self.status_code = status_code
+        self.elapsed_seconds = elapsed_seconds
 
 
 class FakeSession:
@@ -22,12 +23,13 @@ class FakeSession:
         self.responses = iter(responses)
         self.calls = []
 
-    def get(self, url, params=None):
-        self.calls.append({"method": "GET", "url": url, "params": params})
-        return next(self.responses)
-
-    def post(self, url, data=None):
-        self.calls.append({"method": "POST", "url": url, "data": data})
+    def request(self, method, url, timeout=None, **kwargs):
+        self.calls.append({
+            "method": method,
+            "url": url,
+            "timeout": timeout,
+            **kwargs,
+        })
         return next(self.responses)
 
 
@@ -36,8 +38,16 @@ def clear_differential_responses():
     false_result = "<html><body>request denied " + ("Z" * 500) + "</body></html>"
     return [
         FakeResponse(baseline),
-        FakeResponse(baseline),
-        FakeResponse(false_result),
+        *[
+            response
+            for _ in range(3)
+            for response in (
+                FakeResponse(baseline),
+                FakeResponse(false_result),
+            )
+        ],
+        FakeResponse("normal application error"),
+        FakeResponse("normal application error"),
     ]
 
 
@@ -73,14 +83,24 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
 
         self.assertEqual(result.status, ValidationStatus.CONFIRMED)
         self.assertEqual(result.validator, "generic_http_sqli")
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 9)
         self.assertTrue(all(call["method"] == "GET" for call in session.calls))
         self.assertTrue(all(call["url"] == "http://app.test/items" for call in session.calls))
         self.assertTrue(all(set(call["params"]) == {"id"} for call in session.calls))
         self.assertEqual(result.evidence["parameter_location"], "query")
         self.assertEqual(result.evidence["http_method"], "GET")
-        self.assertGreaterEqual(result.evidence["baseline_true_similarity"], 0.90)
-        self.assertLessEqual(result.evidence["baseline_false_similarity"], 0.70)
+        boolean = result.evidence["detection_methods"][
+            "boolean-response-differential"
+        ]
+        self.assertEqual(boolean["confirming_pairs"], 3)
+        self.assertGreaterEqual(
+            boolean["pairs"][0]["baseline_true_similarity"],
+            0.90,
+        )
+        self.assertLessEqual(
+            boolean["pairs"][0]["baseline_false_similarity"],
+            0.70,
+        )
 
     def test_post_form_clear_differential_is_confirmed(self):
         session = FakeSession(clear_differential_responses())
@@ -96,14 +116,14 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
 
     def test_equivalent_true_and_false_responses_are_rejected(self):
         same = "<html><body>same application response</body></html>"
-        session = FakeSession([FakeResponse(same) for _ in range(3)])
+        session = FakeSession([FakeResponse(same) for _ in range(17)])
 
         result = dispatch(make_sqli_finding(), session=session)
 
         self.assertEqual(result.status, ValidationStatus.REJECTED)
         self.assertEqual(
             result.evidence["reason"],
-            "true_and_false_responses_equivalent",
+            "all_detection_methods_negative",
         )
 
     def test_ambiguous_comparison_returns_manual_review(self):
@@ -118,7 +138,7 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
         self.assertEqual(result.status, ValidationStatus.MANUAL_REVIEW)
         self.assertEqual(
             result.evidence["reason"],
-            "ambiguous_response_differential",
+            "incomplete_or_ambiguous_detection_coverage",
         )
 
     def test_missing_endpoint_returns_manual_review(self):
@@ -139,7 +159,7 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
 
     def test_unsupported_http_method_returns_manual_review(self):
         result = dispatch(
-            make_sqli_finding(http_method="PUT"),
+            make_sqli_finding(http_method="DELETE"),
             session=FakeSession([]),
         )
         self.assertEqual(result.status, ValidationStatus.MANUAL_REVIEW)
@@ -147,7 +167,7 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
 
     def test_unsupported_parameter_location_returns_manual_review(self):
         result = dispatch(
-            make_sqli_finding(parameter_location="json"),
+            make_sqli_finding(parameter_location="path"),
             session=FakeSession([]),
         )
         self.assertEqual(result.status, ValidationStatus.MANUAL_REVIEW)
@@ -214,7 +234,7 @@ class TestGenericHttpSqlInjectionValidator(unittest.TestCase):
 
         sent_values = [call["params"]["id"] for call in session.calls]
         self.assertNotIn("scanner-controlled-value", sent_values)
-        self.assertEqual(len(set(sent_values)), 3)
+        self.assertEqual(len(set(sent_values)), 9)
 
     def test_confirmed_finding_enriches_to_t1190_and_builds_chain(self):
         finding = make_sqli_finding()

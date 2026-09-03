@@ -206,6 +206,9 @@ td small { margin-top: 3px; color: var(--muted); font: .68rem ui-monospace, mono
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .detail-field { display: grid; gap: 2px; color: #b9c7d3; overflow-wrap: anywhere; white-space: pre-wrap; }
 .detail-field strong { color: var(--muted); font-size: .67rem; letter-spacing: .05em; text-transform: uppercase; }
+.detection-method-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.detection-method-card { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-soft); }
+.detection-method-card > strong { font-size: .76rem; }
 
 .chain-list { display: grid; gap: 12px; }
 .chain-card { padding: 15px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); }
@@ -259,5 +262,6 @@ footer { padding-top: 28px; color: #5f7180; font-size: .75rem; text-align: cente
   .lookup-form { display: grid; }
   .secondary-button { width: 100%; }
   .detail-grid { grid-template-columns: 1fr; }
+  .detection-method-grid { grid-template-columns: 1fr; }
   .proof-panel { width: 76vw; }
 }

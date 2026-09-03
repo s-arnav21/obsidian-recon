@@ -117,6 +117,23 @@ def _validation_evidence(validation: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _safe_observed_evidence(vulnerability_type: str, evidence: Mapping[str, Any]) -> Dict[str, Any]:
+    if vulnerability_type == "sql_injection" and isinstance(
+        evidence.get("detection_methods"),
+        dict,
+    ):
+        return {
+            key: deepcopy(evidence[key])
+            for key in (
+                "waf_or_filter_interference",
+                "methods_triggered",
+                "detection_methods",
+                "request_timeout_seconds",
+                "maximum_request_attempts",
+                "reason",
+                "decision",
+            )
+            if key in evidence
+        }
     keys = {
         "sql_injection": (
             "baseline_status", "true_probe_status", "false_probe_status",
@@ -145,10 +162,25 @@ def _safe_observed_evidence(vulnerability_type: str, evidence: Mapping[str, Any]
 
 def _request_form(method: str, endpoint: str, parameter: str, value: str, location: str) -> str:
     encoded = urlencode({parameter: value})
-    if method == "GET" and location == "query":
-        return f"GET {endpoint}?{encoded}"
-    if method == "POST" and location == "form":
-        return f"POST {endpoint}\nContent-Type: application/x-www-form-urlencoded\n\n{encoded}"
+    if location == "query":
+        return f"{method} {endpoint}?{encoded}"
+    if location == "form":
+        return f"{method} {endpoint}\nContent-Type: application/x-www-form-urlencoded\n\n{encoded}"
+    if location == "json":
+        return (
+            f'{method} {endpoint}\nContent-Type: application/json\n\n'
+            f'{{"{parameter}": "{value}", "_other_fields": "preserved/redacted"}}'
+        )
+    if location == "cookie":
+        return (
+            f"{method} {endpoint}\nCookie: {parameter}={value}; "
+            "[other cookies preserved/redacted]"
+        )
+    if location == "header":
+        return (
+            f"{method} {endpoint}\n{parameter}: {value}\n"
+            "[other headers preserved/redacted]"
+        )
     return f"{method} {endpoint}"
 
 
@@ -179,25 +211,88 @@ def _poc(
     if vulnerability_type == "sql_injection":
         generic_differential = (
             validation.get("validator") == "generic_http_sqli"
-            or validation.get("method") == "boolean-response-differential SQLi"
+            or validation.get("method") in {
+                "boolean-response-differential SQLi",
+                "multi-method deterministic SQLi",
+            }
         )
         if generic_differential:
+            detection_methods = evidence.get("detection_methods")
+            advanced = isinstance(detection_methods, dict)
+            if advanced:
+                boolean = detection_methods.get(
+                    "boolean-response-differential",
+                    {},
+                )
+                method_names = {
+                    "boolean-response-differential": "Boolean Differential",
+                    "error-based": "Error Based",
+                    "time-based-blind": "Time Based Blind",
+                }
+                common["detection_methods"] = [
+                    {
+                        "id": method_id,
+                        "name": method_names[method_id],
+                        "state": method_evidence.get("state", "unknown"),
+                        "reason": method_evidence.get("reason"),
+                        "summary": (
+                            f"{method_evidence.get('confirming_pairs', 0)}/"
+                            f"{method_evidence.get('total_pairs', 0)} pairs confirmed"
+                            if method_id == "boolean-response-differential"
+                            else None
+                        ),
+                    }
+                    for method_id, method_evidence in detection_methods.items()
+                    if method_id in method_names
+                ]
+            else:
+                boolean = {}
             common.update({
-                "verification_method": "Boolean-response differential",
+                "verification_method": (
+                    "Multi-method deterministic SQL injection validation"
+                    if advanced
+                    else "Boolean-response differential"
+                ),
                 "steps": [
                     "Establish a normal baseline response.",
-                    "Submit the validator's logically TRUE condition through the identified parameter.",
-                    "Submit the validator's logically FALSE control condition.",
-                    "Compare the three application responses.",
-                    "Confirm only when the configured differential thresholds are satisfied.",
+                    "Evaluate multiple fixed TRUE/FALSE boolean-response pairs.",
+                    "Check whether fixed syntax probes introduce a new database-error signature.",
+                    "When stronger methods do not confirm, compare repeatable fixed-delay timing probes with a stable baseline.",
+                    "Confirm only when at least one bounded method supplies sufficiently strong evidence without filter interference.",
                 ],
                 "interpretation": (
-                    "The normal and TRUE-condition responses were effectively equivalent while "
-                    "the FALSE-condition response changed substantially. This is consistent with "
-                    "the identified input influencing a backend SQL condition."
+                    "One or more bounded SQL injection detection methods produced "
+                    "confirming evidence without WAF or filter interference."
                     if confirmed else "The observed response differential did not confirm SQL injection."
                 ),
             })
+            if advanced and controlled_execution and confirmed:
+                pairs = boolean.get("pairs") or []
+                control_value = boolean.get("control_value")
+                if endpoint and method and parameter and location and control_value:
+                    common["requests"] = [{
+                        "label": "Baseline",
+                        "request": _request_form(
+                            method, endpoint, parameter, control_value, location,
+                        ),
+                    }]
+                    for pair in pairs:
+                        pair_index = pair.get("pair_index")
+                        for label, key in (
+                            ("TRUE-condition", "true_probe"),
+                            ("FALSE control", "false_probe"),
+                        ):
+                            if pair.get(key) is not None:
+                                common["requests"].append({
+                                    "label": f"Pair {pair_index} {label}",
+                                    "request": _request_form(
+                                        method,
+                                        endpoint,
+                                        parameter,
+                                        str(pair[key]),
+                                        location,
+                                    ),
+                                })
         else:
             common.update({
                 "verification_method": validation.get("method") or "Observed SQL-result differential",
@@ -213,7 +308,16 @@ def _poc(
                     if confirmed else "The observed database-result count did not confirm SQL injection."
                 ),
             })
-        if generic_differential and controlled_execution and confirmed and endpoint and method and parameter and location:
+        if (
+            generic_differential
+            and not isinstance(evidence.get("detection_methods"), dict)
+            and controlled_execution
+            and confirmed
+            and endpoint
+            and method
+            and parameter
+            and location
+        ):
             common["requests"] = [
                 {"label": "Baseline", "request": _request_form(method, endpoint, parameter, SQL_CONTROL_VALUE, location)},
                 {"label": "TRUE-condition test", "request": _request_form(method, endpoint, parameter, SQL_TRUE_VALUE, location)},

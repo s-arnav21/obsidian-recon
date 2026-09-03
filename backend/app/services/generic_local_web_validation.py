@@ -175,11 +175,31 @@ class ScopedLoopbackHttpClient:
         self.requested_urls.append(resolved)
         return resolved
 
-    def get(self, url: str, params: Optional[Dict[str, str]] = None) -> Any:
-        return self._client.get(self._scoped_url(url), params=params)
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        """Send one request after resolving and enforcing the exact origin."""
+        return self._client.request(method, self._scoped_url(url), **kwargs)
 
-    def post(self, url: str, data: Optional[Dict[str, str]] = None) -> Any:
-        return self._client.post(self._scoped_url(url), data=data)
+    def get(
+        self,
+        url: str,
+        params: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.request("GET", url, params=params, **kwargs)
+
+    def post(
+        self,
+        url: str,
+        data: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.request("POST", url, data=data, **kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> Any:
+        return self.request("PUT", url, **kwargs)
+
+    def patch(self, url: str, **kwargs: Any) -> Any:
+        return self.request("PATCH", url, **kwargs)
 
     def close(self) -> None:
         self._client.close()

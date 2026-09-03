@@ -45,17 +45,35 @@ class DeterministicScopedClient:
     def __exit__(self, exc_type, exc, traceback):
         return None
 
-    def get(self, url, params=None):
+    def get(self, url, params=None, **kwargs):
         if self.fail:
             raise RuntimeError("synthetic discovery failure with secret-value")
         if params is None:
             return Response("local fixture")
         value = next(iter(params.values()))
-        if value in {"1", "1 AND 1=1"}:
+        if value in {
+            "1",
+            "1 AND 1=1",
+            "1 AND 'x'='x'",
+            "0 OR 1=1 AND 1=1",
+        }:
             return Response("available " + ("A" * 500))
-        return Response("denied " + ("Z" * 500))
+        if value in {
+            "1 AND 1=2",
+            "1 AND 'x'='y'",
+            "0 OR 1=1 AND 1=2",
+        }:
+            return Response("denied " + ("Z" * 500))
+        return Response("normal application response")
 
-    def post(self, url, data=None):
+    def post(self, url, data=None, **kwargs):
+        return Response("unsupported", 405)
+
+    def request(self, method, url, timeout=None, **kwargs):
+        if method == "GET":
+            return self.get(url, **kwargs)
+        if method == "POST":
+            return self.post(url, **kwargs)
         return Response("unsupported", 405)
 
 

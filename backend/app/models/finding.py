@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from numbers import Real
@@ -52,8 +53,9 @@ class ParameterLocation:
     JSON = "json"
     PATH = "path"
     HEADER = "header"
+    COOKIE = "cookie"
 
-    SUPPORTED = frozenset({QUERY, FORM, JSON, PATH, HEADER})
+    SUPPORTED = frozenset({QUERY, FORM, JSON, PATH, HEADER, COOKIE})
 
     @classmethod
     def normalize(cls, location: str) -> str:
@@ -149,6 +151,15 @@ class Finding:
     parameter_name: Optional[str] = None
     parameter_location: Optional[str] = None
 
+    # Ephemeral original request state used by validators. It is intentionally
+    # excluded from to_dict() so headers/cookies cannot enter API or persistence
+    # output through the canonical Finding serializer.
+    http_request_context: Dict[str, Dict[str, Any]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
     def __post_init__(self) -> None:
         for field_name in (
             "finding_id",
@@ -190,6 +201,26 @@ class Finding:
             self.parameter_location = ParameterLocation.normalize(
                 self.parameter_location
             )
+
+        if not isinstance(self.http_request_context, dict):
+            raise TypeError("http_request_context must be a dictionary")
+        normalized_context: Dict[str, Dict[str, Any]] = {}
+        for location, values in self.http_request_context.items():
+            normalized_location = ParameterLocation.normalize(location)
+            if normalized_location == ParameterLocation.PATH:
+                raise ValueError(
+                    "http_request_context does not support path parameters"
+                )
+            if not isinstance(values, dict):
+                raise TypeError(
+                    "http_request_context values must be dictionaries"
+                )
+            if not all(isinstance(name, str) and name for name in values):
+                raise TypeError(
+                    "http_request_context parameter names must be non-empty strings"
+                )
+            normalized_context[normalized_location] = deepcopy(values)
+        self.http_request_context = normalized_context
 
         _require_non_empty_string(self.severity, "severity")
         _require_non_empty_string(self.observed_at, "observed_at")
@@ -262,7 +293,9 @@ class Finding:
         return list(self.requires)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        serialized = asdict(self)
+        serialized.pop("http_request_context", None)
+        return serialized
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Finding":

@@ -16,10 +16,15 @@ GENERIC_REFLECTED_XSS_VALIDATOR_ID = "generic-http-reflected-xss"
 GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID = "generic-http-exposed-resource"
 GENERIC_COMMAND_EXECUTION_VALIDATOR_ID = "generic-http-command-execution"
 RECON_MANUAL_REVIEW_VALIDATOR_ID = "recon-manual-review"
-SUPPORTED_REQUEST_SHAPES = frozenset({
+REFLECTED_XSS_REQUEST_SHAPES = frozenset({
     ("GET", "query"),
     ("POST", "form"),
 })
+SQLI_REQUEST_SHAPES = frozenset(
+    (method, location)
+    for method in ("GET", "POST", "PUT", "PATCH")
+    for location in ("query", "form", "json", "cookie", "header")
+)
 SQLI_TYPES = frozenset({"sql_injection", "sqli"})
 COMMAND_EXECUTION_TYPES = frozenset({
     "command_execution",
@@ -64,6 +69,8 @@ class HttpScannerRecord:
     severity: str = "medium"
     evidence: Dict[str, Any] = field(default_factory=dict)
     evidence_refs: List[str] = field(default_factory=list)
+    # Ephemeral trusted request state. Never included in Finding.to_dict().
+    http_request_context: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     observed_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -218,6 +225,7 @@ def _build_finding(
         http_method=http_method,
         parameter_name=parameter_name,
         parameter_location=parameter_location,
+        http_request_context=getattr(record, "http_request_context", {}),
     )
 
 
@@ -227,6 +235,7 @@ def _normalize_parameterized_record(
     vulnerability_type: str,
     validator_id: str,
     request_shape_error: str,
+    supported_request_shapes: frozenset[tuple[str, str]],
 ) -> Finding:
     http_method = _required_text(record.http_method, "http_method").upper()
     parameter_name = _required_text(record.parameter_name, "parameter_name")
@@ -235,7 +244,7 @@ def _normalize_parameterized_record(
         "parameter_location",
     ).lower()
 
-    if (http_method, parameter_location) not in SUPPORTED_REQUEST_SHAPES:
+    if (http_method, parameter_location) not in supported_request_shapes:
         raise ScannerNormalizationError(request_shape_error)
 
     return _build_finding(
@@ -263,8 +272,9 @@ def normalize_http_sqli_record(record: HttpScannerRecord) -> Finding:
         vulnerability_type="sql_injection",
         validator_id=GENERIC_SQLI_VALIDATOR_ID,
         request_shape_error=(
-            "supported HTTP SQLi request shapes are GET/query and POST/form"
+            "unsupported HTTP SQLi request shape"
         ),
+        supported_request_shapes=SQLI_REQUEST_SHAPES,
     )
 
 
@@ -285,6 +295,7 @@ def normalize_reflected_xss_record(record: HttpScannerRecord) -> Finding:
         request_shape_error=(
             "supported reflected-XSS request shapes are GET/query and POST/form"
         ),
+        supported_request_shapes=REFLECTED_XSS_REQUEST_SHAPES,
     )
 
 
@@ -389,6 +400,7 @@ def _candidate_finding(
         http_method=http_method,
         parameter_name=parameter_name,
         parameter_location=parameter_location,
+        http_request_context=getattr(record, "http_request_context", {}),
     )
 
 
@@ -414,7 +426,11 @@ def normalize_scanner_candidate(record: ScannerCandidateRecord) -> Finding:
         and method
         and location
         and parameter
-        and (method, location) in SUPPORTED_REQUEST_SHAPES
+        and (
+            (method, location) in SQLI_REQUEST_SHAPES
+            if normalized_type in SQLI_TYPES
+            else (method, location) in REFLECTED_XSS_REQUEST_SHAPES
+        )
     )
 
     validator_id: Optional[str] = RECON_MANUAL_REVIEW_VALIDATOR_ID

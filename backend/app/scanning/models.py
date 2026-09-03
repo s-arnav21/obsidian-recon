@@ -40,6 +40,8 @@ class ScannerCandidateRecord:
     http_method: Optional[str] = None
     parameter_name: Optional[str] = None
     parameter_location: Optional[str] = None
+    # Trusted transient request state. Canonical Finding serialization omits it.
+    http_request_context: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     evidence: Dict[str, Any] = field(default_factory=dict)
     evidence_refs: List[str] = field(default_factory=list)
     observed_at: Optional[str] = None

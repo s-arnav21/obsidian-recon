@@ -237,6 +237,25 @@ function renderProofDetails(presentation) {
   appendLabeledText(overview, "Confidence", typeof validation.confidence === "number" ? `${Math.round(validation.confidence * 100)}%` : null);
   panel.append(overview);
 
+  if (Array.isArray(poc.detection_methods) && poc.detection_methods.length) {
+    const methodsSection = document.createElement("section");
+    const methodsHeading = document.createElement("h4");
+    methodsHeading.textContent = "Detection methods";
+    const methodsGrid = document.createElement("div");
+    methodsGrid.className = "detection-method-grid";
+    poc.detection_methods.forEach((method) => {
+      const card = document.createElement("article");
+      card.className = "detection-method-card";
+      const name = document.createElement("strong");
+      name.textContent = method.name;
+      card.append(name, createStatusPill(method.state));
+      appendLabeledText(card, "Result", method.summary || displayStatus(method.reason));
+      methodsGrid.append(card);
+    });
+    methodsSection.append(methodsHeading, methodsGrid);
+    panel.append(methodsSection);
+  }
+
   appendList(panel, "Reproduction steps", poc.steps);
   if (Array.isArray(poc.requests) && poc.requests.length) {
     const requests = document.createElement("section");

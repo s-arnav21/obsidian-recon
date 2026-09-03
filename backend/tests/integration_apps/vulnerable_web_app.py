@@ -49,9 +49,18 @@ def health() -> dict[str, str]:
 @app.get("/items", response_class=HTMLResponse)
 def items(item_id: str = Query(alias="id")) -> HTMLResponse:
     """Simulate deterministic boolean-response SQL injection behavior."""
-    if item_id in {"1", "1 AND 1=1"}:
+    if item_id in {
+        "1",
+        "1 AND 1=1",
+        "1 AND 'x'='x'",
+        "0 OR 1=1 AND 1=1",
+    }:
         return HTMLResponse(_SQLI_BASELINE_BODY)
-    if item_id == "1 AND 1=2":
+    if item_id in {
+        "1 AND 1=2",
+        "1 AND 'x'='y'",
+        "0 OR 1=1 AND 1=2",
+    }:
         return HTMLResponse(_SQLI_FALSE_BODY)
     return HTMLResponse("<html><body>synthetic item lookup</body></html>")
 

@@ -124,6 +124,81 @@ class SecurityPresentationTests(unittest.TestCase):
             "Detailed PoC request not available from the observed evidence.",
         )
 
+    def test_advanced_sqli_evidence_presents_methods_and_all_boolean_pairs(self):
+        pairs = [
+            {
+                "pair_index": index,
+                "true_probe": true_probe,
+                "false_probe": false_probe,
+                "pair_confirmed": index < 3,
+            }
+            for index, (true_probe, false_probe) in enumerate((
+                ("1 AND 1=1", "1 AND 1=2"),
+                ("1 AND 'x'='x'", "1 AND 'x'='y'"),
+                ("0 OR 1=1 AND 1=1", "0 OR 1=1 AND 1=2"),
+            ), start=1)
+        ]
+        advanced_validation = validation(
+            "multi-method deterministic SQLi",
+            {
+                "methods_triggered": ["boolean-response-differential"],
+                "waf_or_filter_interference": False,
+                "detection_methods": {
+                    "boolean-response-differential": {
+                        "state": "confirmed",
+                        "reason": "multiple_boolean_pairs_confirmed",
+                        "control_value": "1",
+                        "confirming_pairs": 2,
+                        "total_pairs": 3,
+                        "pairs": pairs,
+                    },
+                    "error-based": {
+                        "state": "negative",
+                        "reason": "no_new_database_error_signature",
+                    },
+                    "time-based-blind": {
+                        "state": "skipped",
+                        "reason": "strong_non_timing_method_confirmed",
+                    },
+                },
+                "decision": "confirmed",
+                "reason": "one_or_more_detection_methods_confirmed",
+            },
+        )
+        result = self.decorate(self.sqli, advanced_validation)
+        poc = result["finding_presentations"][0]["poc"]
+
+        self.assertEqual(len(poc["requests"]), 7)
+        self.assertEqual(
+            [method["state"] for method in poc["detection_methods"]],
+            ["confirmed", "negative", "skipped"],
+        )
+        self.assertEqual(
+            poc["detection_methods"][0]["summary"],
+            "2/3 pairs confirmed",
+        )
+        self.assertIn("detection_methods", poc["observed_evidence"])
+
+    def test_legacy_dvwa_row_count_presentation_is_preserved(self):
+        dvwa_validation = {
+            "status": "confirmed",
+            "confidence": 1.0,
+            "validator": "dvwa_sqli_low",
+            "method": "boolean-based SQLi, id parameter",
+            "evidence": {
+                "baseline_result_count": 1,
+                "injected_result_count": 5,
+                "baseline_length": 4500,
+                "injected_length": 4800,
+            },
+        }
+        result = self.decorate(self.sqli, dvwa_validation)
+        poc = result["finding_presentations"][0]["poc"]
+
+        self.assertIn("database-result records", poc["interpretation"])
+        self.assertEqual(poc["observed_evidence"]["baseline_result_count"], 1)
+        self.assertEqual(poc["observed_evidence"]["injected_result_count"], 5)
+
     def test_risk_rating_is_deterministic(self):
         first = self.decorate(self.sqli, self.sqli_validation)
         second = self.decorate(self.sqli, self.sqli_validation)

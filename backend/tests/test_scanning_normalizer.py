@@ -28,13 +28,21 @@ class FakeSession:
         false_result = "<html><body>record denied " + ("Z" * 500) + "</body></html>"
         self.responses = iter([
             FakeResponse(baseline),
-            FakeResponse(baseline),
-            FakeResponse(false_result),
+            *[
+                response
+                for _ in range(3)
+                for response in (
+                    FakeResponse(baseline),
+                    FakeResponse(false_result),
+                )
+            ],
+            FakeResponse("normal application response"),
+            FakeResponse("normal application response"),
         ])
         self.calls = []
 
-    def get(self, url, params=None):
-        self.calls.append((url, params))
+    def request(self, method, url, timeout=None, **kwargs):
+        self.calls.append((method, url, timeout, kwargs))
         return next(self.responses)
 
 
@@ -132,6 +140,27 @@ class TestHttpScannerNormalizer(unittest.TestCase):
         self.assertEqual(finding.parameter_name, "id")
         self.assertEqual(finding.parameter_location, "query")
 
+    def test_expanded_sqli_request_shapes_and_transient_context_normalize(self):
+        for method in ("GET", "POST", "PUT", "PATCH"):
+            for location in ("query", "form", "json", "cookie", "header"):
+                with self.subTest(method=method, location=location):
+                    context = {location: {"preserved": "test-value"}}
+                    finding = normalize_http_sqli_record(make_record(
+                        http_method=method,
+                        parameter_location=location,
+                        http_request_context=context,
+                    ))
+                    self.assertEqual(finding.http_method, method)
+                    self.assertEqual(finding.parameter_location, location)
+                    self.assertEqual(
+                        finding.http_request_context[location]["preserved"],
+                        "test-value",
+                    )
+                    self.assertNotIn(
+                        "http_request_context",
+                        finding.to_dict(),
+                    )
+
     def test_sqli_aliases_normalize_to_canonical_type(self):
         for vulnerability_type in ("sqli", "sql-injection", "SQL Injection"):
             with self.subTest(vulnerability_type=vulnerability_type):
@@ -144,10 +173,10 @@ class TestHttpScannerNormalizer(unittest.TestCase):
         cases = {
             "missing endpoint": ({"endpoint": ""}, "endpoint"),
             "missing parameter": ({"parameter_name": ""}, "parameter_name"),
-            "unsupported method": ({"http_method": "PUT"}, "request shapes"),
+            "unsupported method": ({"http_method": "DELETE"}, "request shape"),
             "unsupported location": (
-                {"parameter_location": "json"},
-                "request shapes",
+                {"parameter_location": "path"},
+                "request shape",
             ),
             "target path": (
                 {"target": "http://127.0.0.1:8090/items"},
@@ -197,8 +226,11 @@ class TestHttpScannerNormalizer(unittest.TestCase):
         self.assertEqual(result.validator, "generic_http_sqli")
         self.assertEqual(result.status, ValidationStatus.CONFIRMED)
         self.assertEqual(validated.validation_status, ValidationStatus.CONFIRMED)
-        self.assertEqual(len(session.calls), 3)
-        self.assertTrue(all(url == "http://127.0.0.1:8090/items" for url, _ in session.calls))
+        self.assertEqual(len(session.calls), 9)
+        self.assertTrue(all(
+            url == "http://127.0.0.1:8090/items"
+            for _, url, _, _ in session.calls
+        ))
 
     def test_normalized_confirmed_finding_maps_to_t1190_and_chains(self):
         finding = normalize_http_sqli_record(make_record())

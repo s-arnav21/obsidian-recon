@@ -708,8 +708,14 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
         )
         self.assertEqual(
             len(presentations["sql_injection"]["poc"]["requests"]),
-            3,
+            7,
         )
+        method_states = {
+            method["name"]: method["state"]
+            for method in presentations["sql_injection"]["poc"]
+            ["detection_methods"]
+        }
+        self.assertEqual(method_states["Boolean Differential"], "confirmed")
         self.assertEqual(
             presentations["command_execution"]["risk"]["rating"],
             "Critical",

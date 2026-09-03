@@ -64,7 +64,27 @@ class TestFinding(unittest.TestCase):
 
     def test_invalid_parameter_location_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "unsupported parameter_location"):
-            make_finding(parameter_location="cookie")
+            make_finding(parameter_location="body")
+
+    def test_transient_http_context_is_copied_but_not_serialized(self):
+        context = {
+            "header": {
+                "Authorization": "Bearer test-secret",
+                "id": "original",
+            },
+        }
+        finding = make_finding(
+            parameter_location="header",
+            http_request_context=context,
+        )
+        context["header"]["Authorization"] = "changed"
+
+        self.assertEqual(
+            finding.http_request_context["header"]["Authorization"],
+            "Bearer test-secret",
+        )
+        self.assertNotIn("http_request_context", finding.to_dict())
+        self.assertNotIn("test-secret", str(finding.to_dict()))
 
     def test_missing_required_fields_fail_clearly(self):
         with self.assertRaisesRegex(
