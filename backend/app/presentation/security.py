@@ -73,7 +73,10 @@ RISK_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     "reflected_xss": {
         "cia": {"confidentiality": "Moderate", "integrity": "Moderate", "availability": "Low"},
-        "technical_impact": ["Unencoded reflection in an HTML response context"],
+        "technical_impact": [
+            "Attacker-controlled syntax in an unsafe HTML or JavaScript context",
+            "Controlled browser-side structural injection",
+        ],
         "business": {
             "confidentiality": "A real exploitable browser context could expose user-accessible information.",
             "integrity": "A real exploit could alter content presented in an affected user's session.",
@@ -127,6 +130,25 @@ def _safe_observed_evidence(vulnerability_type: str, evidence: Mapping[str, Any]
                 "waf_or_filter_interference",
                 "methods_triggered",
                 "detection_methods",
+                "request_timeout_seconds",
+                "maximum_request_attempts",
+                "reason",
+                "decision",
+            )
+            if key in evidence
+        }
+    if vulnerability_type == "reflected_xss" and isinstance(
+        evidence.get("probes"),
+        dict,
+    ):
+        return {
+            key: deepcopy(evidence[key])
+            for key in (
+                "baseline",
+                "waf_or_filter_interference",
+                "reflection_observed",
+                "strong_structural_signals",
+                "probes",
                 "request_timeout_seconds",
                 "maximum_request_attempts",
                 "reason",
@@ -350,10 +372,62 @@ def _poc(
                 {"label": "False control", "request": _request_form("POST", endpoint, parameter, CONTROL_PROBE_TOKEN, "form")},
             ]
     elif vulnerability_type == "reflected_xss":
+        probes = evidence.get("probes")
+        structured = isinstance(probes, dict)
+        if structured:
+            probe_names = {
+                "inert_element": "Inert Element",
+                "attribute_boundary": "Attribute Boundary",
+                "html_comment_boundary": "HTML Comment Boundary",
+                "javascript_string_boundary": "JavaScript String Boundary",
+            }
+            common["detection_methods"] = [
+                {
+                    "id": probe_id,
+                    "name": probe_names[probe_id],
+                    "state": (
+                        "confirmed"
+                        if probe.get("structural_boundary_changed")
+                        else "manual_review"
+                        if probe.get("verdict") == "inconclusive"
+                        else "rejected"
+                        if probe.get("state") == "completed"
+                        else probe.get("state", "unknown")
+                    ),
+                    "reason": probe.get("reason"),
+                    "summary": (
+                        probe.get("structural_signal")
+                        or (
+                            f"{probe.get('reflection_context', 'unknown')} · "
+                            f"{probe.get('encoding_fingerprint', 'unknown')}"
+                        )
+                    ),
+                }
+                for probe_id, probe in probes.items()
+                if probe_id in probe_names
+            ]
         common.update({
-            "verification_method": "Inert HTML reflection",
-            "steps": ["Send an inert HTML reflection marker.", "Compare it with the baseline response.", "Confirm only when the inert marker is returned unencoded in HTML context."],
-            "interpretation": "An inert HTML test marker was returned unencoded in an HTML context and was absent from the baseline response." if confirmed else "The inert reflection evidence did not confirm reflected XSS.",
+            "verification_method": (
+                "Context-aware inert reflection analysis"
+                if structured
+                else "Inert HTML reflection"
+            ),
+            "steps": [
+                "Establish a deterministic baseline marker and check for marker collisions.",
+                "Send fixed non-executing element, attribute, comment, and JavaScript-boundary probes.",
+                "Classify response type, encoding, and the parsed reflection context.",
+                "Confirm only when an inert probe demonstrates structural boundary control.",
+            ],
+            "interpretation": (
+                "At least one fixed inert probe created controlled response structure "
+                "without executing JavaScript."
+                if confirmed
+                else "Reflection alone did not establish unsafe structural control."
+            ),
+            "safety_note": (
+                "No browser, script, event handler, external callback, cookie access, "
+                "or data extraction was used."
+            ),
         })
     elif vulnerability_type == "information_disclosure":
         common.update({

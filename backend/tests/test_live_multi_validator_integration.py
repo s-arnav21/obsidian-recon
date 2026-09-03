@@ -9,7 +9,9 @@ from urllib.parse import urlsplit
 from app.models.finding import ValidationStatus
 from app.scanning.normalizer import (
     ExposedResourceScannerRecord,
+    HttpScannerRecord,
     normalize_exposed_resource_record,
+    normalize_reflected_xss_record,
 )
 from app.validation.dispatcher import dispatch
 from app.validation.command_execution import (
@@ -87,6 +89,59 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
             response.text,
             f"<html><body>{marker}</body></html>",
         )
+
+    def test_extended_xss_fixture_routes_are_available(self):
+        paths = (
+            "/xss/text",
+            "/xss/escaped",
+            "/xss/attribute",
+            "/xss/comment",
+            "/xss/script",
+            "/xss/script-safe",
+            "/xss/style",
+            "/xss/json",
+            "/xss/filter",
+        )
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            for path in paths:
+                with self.subTest(path=path):
+                    response = client.get(
+                        f"{self.origin}{path}",
+                        params={"q": "route-availability-marker"},
+                    )
+                    self.assertEqual(response.status_code, 200)
+
+    def test_controlled_xss_fixture_cases_have_conservative_verdicts(self):
+        cases = {
+            "/xss/text": ValidationStatus.REJECTED,
+            "/xss/escaped": ValidationStatus.REJECTED,
+            "/search": ValidationStatus.CONFIRMED,
+            "/xss/attribute": ValidationStatus.CONFIRMED,
+            "/xss/comment": ValidationStatus.CONFIRMED,
+            "/xss/script": ValidationStatus.CONFIRMED,
+            "/xss/script-safe": ValidationStatus.REJECTED,
+            "/xss/style": ValidationStatus.MANUAL_REVIEW,
+            "/xss/json": ValidationStatus.REJECTED,
+            "/xss/filter": ValidationStatus.MANUAL_REVIEW,
+        }
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            for index, (endpoint, expected) in enumerate(cases.items(), start=1):
+                with self.subTest(endpoint=endpoint):
+                    finding = normalize_reflected_xss_record(HttpScannerRecord(
+                        record_id=f"finding-live-xss-{index}",
+                        scan_id="scan-live-xss-cases",
+                        asset_id="asset-live-xss-cases",
+                        target=self.origin,
+                        endpoint=endpoint,
+                        http_method="GET",
+                        parameter_name="q",
+                        parameter_location="query",
+                        scanner_name="controlled_fixture",
+                        scanner_template_id=f"fixture-{index}",
+                        vulnerability_type="reflected_xss",
+                    ))
+                    result = dispatch(finding, session=client)
+                    self.assertEqual(result.status, expected)
 
     def test_exposure_endpoint_uses_only_static_synthetic_data(self):
         with ScopedLoopbackHttpClient(self.origin) as client:

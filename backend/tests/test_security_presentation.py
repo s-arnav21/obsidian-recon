@@ -268,6 +268,98 @@ class SecurityPresentationTests(unittest.TestCase):
                 self.assertIsNone(presentation["mitre"])
                 self.assertEqual(presentation["risk"]["cia"]["confidentiality"], confidentiality)
 
+    def test_context_aware_xss_evidence_renders_probe_results(self):
+        xss = finding(
+            "finding-context-xss",
+            "reflected_xss",
+            endpoint="/reflect",
+            technique_id=None,
+        )
+        xss_validation = {
+            "status": "confirmed",
+            "confidence": 0.91,
+            "validator": "generic_http_reflected_xss",
+            "method": "context-aware inert reflection analysis",
+            "evidence": {
+                "reflection_observed": True,
+                "waf_or_filter_interference": False,
+                "strong_structural_signals": [{
+                    "probe_name": "inert_element",
+                    "signal": "controlled_inert_html_element_created",
+                    "reflection_context": "html_attribute_value",
+                }],
+                "probes": {
+                    "inert_element": {
+                        "state": "completed",
+                        "verdict": "strong_structural_evidence",
+                        "reason": "controlled_inert_html_element_created",
+                        "structural_boundary_changed": True,
+                        "structural_signal": "controlled_inert_html_element_created",
+                        "reflection_context": "html_attribute_value",
+                        "encoding_fingerprint": "raw_unencoded",
+                    },
+                    "attribute_boundary": {
+                        "state": "completed",
+                        "verdict": "sanitized_or_non_structural",
+                        "reason": "no_structural_boundary_control",
+                        "structural_boundary_changed": False,
+                        "reflection_context": "html_text_node",
+                        "encoding_fingerprint": "html_entity_encoded",
+                    },
+                },
+                "decision": "confirmed",
+                "reason": "controlled_structural_breakout_confirmed",
+            },
+        }
+        presentation = self.decorate(xss, xss_validation)[
+            "finding_presentations"
+        ][0]
+
+        self.assertEqual(
+            presentation["poc"]["verification_method"],
+            "Context-aware inert reflection analysis",
+        )
+        self.assertEqual(
+            [item["state"] for item in presentation["poc"]["detection_methods"]],
+            ["confirmed", "rejected"],
+        )
+        self.assertIn("probes", presentation["poc"]["observed_evidence"])
+        self.assertIn("No browser", presentation["poc"]["safety_note"])
+        self.assertIsNone(presentation["mitre"])
+
+    def test_safe_xss_reflection_is_described_without_claiming_confirmation(self):
+        xss = finding(
+            "finding-safe-xss",
+            "reflected_xss",
+            endpoint="/reflect",
+            technique_id=None,
+        )
+        xss["validation_status"] = "rejected"
+        xss_validation = {
+            "status": "rejected",
+            "confidence": 0.9,
+            "validator": "generic_http_reflected_xss",
+            "method": "context-aware inert reflection analysis",
+            "evidence": {
+                "reflection_observed": True,
+                "strong_structural_signals": [],
+                "probes": {},
+                "decision": "rejected",
+                "reason": "safe_encoding_or_sanitization_observed",
+            },
+        }
+
+        presentation = self.decorate(xss, xss_validation)[
+            "finding_presentations"
+        ][0]
+
+        self.assertFalse(presentation["poc"]["available"])
+        self.assertIn(
+            "did not establish unsafe structural control",
+            presentation["poc"]["interpretation"],
+        )
+        self.assertEqual(presentation["risk"]["rating"], "Not rated")
+
     def test_attack_flow_explains_capability_dependencies_and_cumulative_risk(self):
         command = finding(
             "finding-command",

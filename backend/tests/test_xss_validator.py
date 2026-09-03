@@ -25,9 +25,14 @@ class ReflectionSession:
         self.reflection_mode = reflection_mode
         self.calls = []
 
-    def _respond(self, method, url, values):
-        self.calls.append({"method": method, "url": url, "values": values})
-        value = next(iter(values.values()))
+    def _respond(self, method, url, values, timeout):
+        self.calls.append({
+            "method": method,
+            "url": url,
+            "values": values,
+            "timeout": timeout,
+        })
+        value = values["query"]
         if self.reflection_mode == "raw":
             body = f"<html><body>{value}</body></html>"
         elif self.reflection_mode == "encoded":
@@ -36,11 +41,12 @@ class ReflectionSession:
             body = "<html><body>static response</body></html>"
         return FakeResponse(body)
 
-    def get(self, url, params=None):
-        return self._respond("GET", url, params)
-
-    def post(self, url, data=None):
-        return self._respond("POST", url, data)
+    def request(self, method, url, timeout=None, **kwargs):
+        values = next(
+            value for key, value in kwargs.items()
+            if key in {"params", "data", "json", "cookies", "headers"}
+        )
+        return self._respond(method, url, values, timeout)
 
 
 def make_record(**overrides):
@@ -78,22 +84,30 @@ class TestGenericReflectedXssValidator(unittest.TestCase):
 
         self.assertEqual(result.status, ValidationStatus.CONFIRMED)
         self.assertEqual(result.validator, "generic_http_reflected_xss")
-        self.assertTrue(result.evidence["marker_reflected"])
-        self.assertTrue(result.evidence["raw_probe_reflected"])
-        self.assertEqual(result.evidence["response_context"], "raw_html_element")
-        self.assertEqual([call["method"] for call in session.calls], ["GET", "GET"])
+        self.assertTrue(result.evidence["reflection_observed"])
+        self.assertTrue(result.evidence["strong_structural_signals"])
+        self.assertEqual(
+            result.evidence["probes"]["inert_element"]["structural_signal"],
+            "controlled_inert_html_element_created",
+        )
+        self.assertEqual([call["method"] for call in session.calls], ["GET"] * 5)
 
     def test_post_form_raw_html_reflection_is_confirmed(self):
         finding = make_finding(
             http_method="post",
             parameter_location="form",
+            http_request_context={"form": {"preserved": "yes"}},
         )
         session = ReflectionSession("raw")
 
         result = dispatch(finding, session=session)
 
         self.assertEqual(result.status, ValidationStatus.CONFIRMED)
-        self.assertEqual([call["method"] for call in session.calls], ["POST", "POST"])
+        self.assertEqual([call["method"] for call in session.calls], ["POST"] * 5)
+        self.assertTrue(all(
+            call["values"]["preserved"] == "yes"
+            for call in session.calls
+        ))
 
     def test_no_reflection_is_rejected(self):
         result = dispatch(
@@ -102,21 +116,25 @@ class TestGenericReflectedXssValidator(unittest.TestCase):
         )
 
         self.assertEqual(result.status, ValidationStatus.REJECTED)
-        self.assertEqual(result.evidence["reason"], "marker_not_reflected")
+        self.assertEqual(result.evidence["reason"], "no_probe_reflection")
 
-    def test_encoded_reflection_is_manual_review(self):
+    def test_encoded_reflection_is_rejected(self):
         result = dispatch(
             make_finding(),
             session=ReflectionSession("encoded"),
         )
 
-        self.assertEqual(result.status, ValidationStatus.MANUAL_REVIEW)
+        self.assertEqual(result.status, ValidationStatus.REJECTED)
         self.assertEqual(
             result.evidence["reason"],
-            "reflection_context_requires_browser_review",
+            "safe_encoding_or_sanitization_observed",
         )
-        self.assertTrue(result.evidence["marker_reflected"])
-        self.assertFalse(result.evidence["raw_probe_reflected"])
+        self.assertTrue(result.evidence["reflection_observed"])
+        self.assertFalse(result.evidence["strong_structural_signals"])
+        self.assertEqual(
+            result.evidence["probes"]["inert_element"]["encoding_fingerprint"],
+            "html_entity_encoded",
+        )
 
     def test_missing_context_returns_manual_review(self):
         finding = replace(make_finding(), endpoint=None)
@@ -127,8 +145,8 @@ class TestGenericReflectedXssValidator(unittest.TestCase):
 
     def test_unsupported_method_or_location_returns_manual_review(self):
         findings = [
-            replace(make_finding(), http_method="PUT"),
-            replace(make_finding(), parameter_location="json"),
+            replace(make_finding(), http_method="DELETE"),
+            replace(make_finding(), parameter_location="path"),
         ]
         for finding in findings:
             with self.subTest(
@@ -139,7 +157,11 @@ class TestGenericReflectedXssValidator(unittest.TestCase):
                 self.assertEqual(result.status, ValidationStatus.MANUAL_REVIEW)
                 self.assertEqual(
                     result.evidence["reason"],
-                    "unsupported_request_shape",
+                    (
+                        "unsupported_http_method"
+                        if finding.http_method == "DELETE"
+                        else "unsupported_parameter_location"
+                    ),
                 )
 
     def test_scanner_supplied_payload_is_ignored(self):

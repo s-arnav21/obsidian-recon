@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import html
+import json
+import re
 import socket
 import threading
 import time
@@ -10,7 +13,7 @@ from urllib.parse import parse_qs
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from app.validation.command_execution import (
     BASELINE_DIAGNOSTIC_TOKEN,
@@ -68,6 +71,72 @@ def items(item_id: str = Query(alias="id")) -> HTMLResponse:
 @app.get("/search", response_class=HTMLResponse)
 def search(q: str) -> HTMLResponse:
     """Deliberately reflect only the supplied test value without encoding."""
+    return HTMLResponse(f"<html><body>{q}</body></html>")
+
+
+@app.get("/xss/text", response_class=HTMLResponse)
+def xss_text(q: str) -> HTMLResponse:
+    """Reflect text after removing HTML/JS syntax characters."""
+    sanitized = re.sub(r"[<>'\"/*;=]", "", q)
+    return HTMLResponse(f"<html><body><p>{sanitized}</p></body></html>")
+
+
+@app.get("/xss/escaped", response_class=HTMLResponse)
+def xss_escaped(q: str) -> HTMLResponse:
+    """Reflect a safely HTML-escaped value in a text node."""
+    return HTMLResponse(
+        f"<html><body><p>{html.escape(q, quote=True)}</p></body></html>"
+    )
+
+
+@app.get("/xss/attribute", response_class=HTMLResponse)
+def xss_attribute(q: str) -> HTMLResponse:
+    """Deliberately place unescaped input in a quoted inert attribute."""
+    return HTMLResponse(f'<html><body><div data-value="{q}"></div></body></html>')
+
+
+@app.get("/xss/comment", response_class=HTMLResponse)
+def xss_comment(q: str) -> HTMLResponse:
+    """Deliberately place unescaped input in an HTML comment."""
+    return HTMLResponse(f"<html><body><!--{q}--></body></html>")
+
+
+@app.get("/xss/script", response_class=HTMLResponse)
+def xss_script(q: str) -> HTMLResponse:
+    """Deliberately place unescaped input in a JavaScript string."""
+    return HTMLResponse(
+        f'<html><body><script>const term = "{q}";</script></body></html>'
+    )
+
+
+@app.get("/xss/script-safe", response_class=HTMLResponse)
+def xss_script_safe(q: str) -> HTMLResponse:
+    """Serialize reflected input as a safely quoted JavaScript string."""
+    serialized = json.dumps(q)
+    return HTMLResponse(
+        f"<html><body><script>const term = {serialized};</script></body></html>"
+    )
+
+
+@app.get("/xss/style", response_class=HTMLResponse)
+def xss_style(q: str) -> HTMLResponse:
+    """Reflect input only within a style block for conservative review."""
+    return HTMLResponse(
+        f"<html><body><style>.sample::after{{content:'{q}'}}</style></body></html>"
+    )
+
+
+@app.get("/xss/json", response_class=JSONResponse)
+def xss_json(q: str) -> JSONResponse:
+    """Reflect input in JSON, which is not an HTML execution context."""
+    return JSONResponse({"query": q})
+
+
+@app.get("/xss/filter", response_class=HTMLResponse)
+def xss_filter(q: str) -> HTMLResponse:
+    """Simulate a filter blocking syntax-bearing probes only."""
+    if any(token in q for token in ('<', '>', '"', "'", "/*", "-->")):
+        return HTMLResponse("request blocked by security policy", status_code=403)
     return HTMLResponse(f"<html><body>{q}</body></html>")
 
 

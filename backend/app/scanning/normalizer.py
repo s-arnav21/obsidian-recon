@@ -16,10 +16,11 @@ GENERIC_REFLECTED_XSS_VALIDATOR_ID = "generic-http-reflected-xss"
 GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID = "generic-http-exposed-resource"
 GENERIC_COMMAND_EXECUTION_VALIDATOR_ID = "generic-http-command-execution"
 RECON_MANUAL_REVIEW_VALIDATOR_ID = "recon-manual-review"
-REFLECTED_XSS_REQUEST_SHAPES = frozenset({
-    ("GET", "query"),
-    ("POST", "form"),
-})
+REFLECTED_XSS_REQUEST_SHAPES = frozenset(
+    (method, location)
+    for method in ("GET", "POST", "PUT", "PATCH")
+    for location in ("query", "form", "json", "cookie", "header")
+)
 SQLI_REQUEST_SHAPES = frozenset(
     (method, location)
     for method in ("GET", "POST", "PUT", "PATCH")
@@ -292,9 +293,7 @@ def normalize_reflected_xss_record(record: HttpScannerRecord) -> Finding:
         record,
         vulnerability_type="reflected_xss",
         validator_id=GENERIC_REFLECTED_XSS_VALIDATOR_ID,
-        request_shape_error=(
-            "supported reflected-XSS request shapes are GET/query and POST/form"
-        ),
+        request_shape_error="unsupported reflected-XSS request shape",
         supported_request_shapes=REFLECTED_XSS_REQUEST_SHAPES,
     )
 
