@@ -16,6 +16,7 @@ import httpx
 
 from app.models.finding import Finding, STATUS_WEIGHT, ValidationStatus
 from app.models.validation import ValidationResult
+from app.validation.http_policy import header_mutation_error
 
 
 VALIDATOR_ID = "generic-http-reflected-xss"
@@ -45,14 +46,6 @@ _WAF_TEXT_PATTERNS = (
     re.compile(r"cloudflare ray id", re.I),
     re.compile(r"temporarily rate[ -]?limited", re.I),
 )
-_SAFE_REFLECTION_HEADERS = frozenset({
-    "user-agent", "referer", "x-forwarded-for",
-})
-_SENSITIVE_HEADERS = frozenset({
-    "authorization", "proxy-authorization", "cookie", "set-cookie",
-    "x-api-key", "api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token",
-})
-_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _HTML_LIKE_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _JAVASCRIPT_STRING_STATES = frozenset({
     "javascript_single_quoted_string",
@@ -252,14 +245,9 @@ def _validate_context(finding: Finding, session: Any) -> Optional[str]:
         if finding.parameter_location not in finding.http_request_context:
             return "insufficient_original_request_context"
     if finding.parameter_location == "header":
-        header_name = finding.parameter_name.strip().lower()
-        if header_name in _SENSITIVE_HEADERS:
-            return "sensitive_header_not_allowed"
-        if (
-            header_name not in _SAFE_REFLECTION_HEADERS
-            or not _HEADER_NAME_RE.fullmatch(finding.parameter_name.strip())
-        ):
-            return "unsupported_header_parameter"
+        header_error = header_mutation_error(finding.parameter_name)
+        if header_error is not None:
+            return header_error
     if session is None:
         return "missing_scoped_http_session"
     if not callable(getattr(session, "request", None)):

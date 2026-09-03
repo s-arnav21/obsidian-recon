@@ -135,15 +135,15 @@ class HarnessPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(FindingORM)),
-                5,
+                6,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(ValidationORM)),
-                4,
+                5,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(EvidenceORM)),
-                4,
+                5,
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(MitreMappingORM)),
@@ -173,7 +173,21 @@ class HarnessPersistenceTests(unittest.TestCase):
                 command_candidate.validations[0].evidence_records[0]
                 .evidence_json["execution_marker_present"]
             )
-            self.assertEqual(len(chains), 3)
+            ssrf_candidate = next(
+                finding for finding in findings
+                if finding.vulnerability_type == "ssrf"
+            )
+            self.assertEqual(ssrf_candidate.status, ValidationStatus.DETECTED)
+            self.assertEqual(
+                ssrf_candidate.validations[0].status,
+                ValidationStatus.CONFIRMED,
+            )
+            self.assertTrue(
+                ssrf_candidate.validations[0].evidence_records[0]
+                .evidence_json["canary_content_marker_observed"]
+            )
+            self.assertEqual(ssrf_candidate.mitre_mappings, [])
+            self.assertEqual(len(chains), 4)
             self.assertTrue(all(
                 [step.step_number for step in chain.steps]
                 == list(range(1, len(chain.steps) + 1))

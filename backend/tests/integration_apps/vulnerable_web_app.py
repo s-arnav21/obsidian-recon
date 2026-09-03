@@ -9,17 +9,28 @@ import socket
 import threading
 import time
 from typing import Optional
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import uvicorn
+import httpx
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
 from app.validation.command_execution import (
     BASELINE_DIAGNOSTIC_TOKEN,
     CONTROL_PROBE_TOKEN,
     EXECUTION_MARKER,
     EXECUTION_PROBE_TOKEN,
+)
+from app.validation.ssrf import (
+    CONTROLLED_CANARY_PATH,
+    CONTROLLED_CONTROL_PATH,
+    controlled_content_marker,
 )
 
 
@@ -41,6 +52,9 @@ _SQLI_FALSE_BODY = (
 SYNTHETIC_EXPOSURE_BODY = (
     "APP_MODE=synthetic-integration-test\n"
     "SERVICE_TOKEN=FAKE-NOT-A-REAL-SECRET\n"
+)
+_SSRF_IDENTIFIER_RE = re.compile(
+    r"^or-ssrf-(?:baseline|canary|negative)-[0-9a-f]{20}$"
 )
 
 
@@ -138,6 +152,133 @@ def xss_filter(q: str) -> HTMLResponse:
     if any(token in q for token in ('<', '>', '"', "'", "/*", "-->")):
         return HTMLResponse("request blocked by security policy", status_code=403)
     return HTMLResponse(f"<html><body>{q}</body></html>")
+
+
+def _origin_tuple(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme.lower(),
+        (parsed.hostname or "").lower(),
+        parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+    )
+
+
+def _controlled_ssrf_destination(request: Request, destination: str) -> bool:
+    try:
+        parsed = urlsplit(destination)
+        destination_origin = _origin_tuple(destination)
+    except ValueError:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if parsed.fragment or destination_origin != _origin_tuple(str(request.base_url)):
+        return False
+    if parsed.path not in {CONTROLLED_CANARY_PATH, CONTROLLED_CONTROL_PATH}:
+        return False
+    values = parse_qs(parsed.query, keep_blank_values=True)
+    if set(values) != {"id"} or len(values["id"]) != 1:
+        return False
+    identifier = values["id"][0]
+    if not _SSRF_IDENTIFIER_RE.fullmatch(identifier):
+        return False
+    if parsed.path == CONTROLLED_CANARY_PATH:
+        return identifier.startswith("or-ssrf-canary-")
+    return identifier.startswith(("or-ssrf-baseline-", "or-ssrf-negative-"))
+
+
+async def _retrieve_controlled_ssrf_destination(
+    request: Request,
+    destination: str,
+) -> PlainTextResponse:
+    if not _controlled_ssrf_destination(request, destination):
+        return PlainTextResponse("controlled destination rejected", status_code=400)
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=1.0,
+        trust_env=False,
+    ) as client:
+        response = await client.get(destination)
+    if response.status_code != 200:
+        return PlainTextResponse("controlled retrieval failed", status_code=502)
+    return PlainTextResponse(response.text)
+
+
+@app.get(CONTROLLED_CANARY_PATH, response_class=PlainTextResponse)
+def ssrf_canary(id: str) -> PlainTextResponse:
+    """Return content derived from, but different from, the canary URL ID."""
+    if not _SSRF_IDENTIFIER_RE.fullmatch(id) or not id.startswith(
+        "or-ssrf-canary-"
+    ):
+        return PlainTextResponse("invalid controlled canary", status_code=400)
+    return PlainTextResponse(controlled_content_marker("canary", id))
+
+
+@app.get(CONTROLLED_CONTROL_PATH, response_class=PlainTextResponse)
+def ssrf_control(id: str) -> PlainTextResponse:
+    """Return a distinct marker for a safe negative/control destination."""
+    if not _SSRF_IDENTIFIER_RE.fullmatch(id) or not id.startswith(
+        ("or-ssrf-baseline-", "or-ssrf-negative-")
+    ):
+        return PlainTextResponse("invalid controlled control", status_code=400)
+    return PlainTextResponse(controlled_content_marker("control", id))
+
+
+@app.get("/ssrf/fetch", response_class=PlainTextResponse)
+async def ssrf_fetch(request: Request, url: str) -> PlainTextResponse:
+    """Fetch only a recognized same-origin controlled canary destination."""
+    return await _retrieve_controlled_ssrf_destination(request, url)
+
+
+@app.post("/ssrf/fetch-json", response_class=PlainTextResponse)
+async def ssrf_fetch_json(request: Request) -> PlainTextResponse:
+    """JSON-context variant using the same strict destination policy."""
+    body = await request.json()
+    destination = body.get("url") if isinstance(body, dict) else None
+    if not isinstance(destination, str):
+        return PlainTextResponse("missing controlled destination", status_code=400)
+    return await _retrieve_controlled_ssrf_destination(request, destination)
+
+
+@app.get("/ssrf/reflect", response_class=PlainTextResponse)
+def ssrf_reflect(url: str) -> PlainTextResponse:
+    """Reflect a URL without performing a server-side retrieval."""
+    return PlainTextResponse(f"submitted URL: {url}")
+
+
+@app.get("/ssrf/no-fetch", response_class=PlainTextResponse)
+def ssrf_no_fetch(url: str) -> PlainTextResponse:
+    """Accept a URL-shaped parameter without reflecting or retrieving it."""
+    return PlainTextResponse("request accepted without retrieval")
+
+
+@app.get("/ssrf/sanitized", response_class=PlainTextResponse)
+def ssrf_sanitized(url: str) -> PlainTextResponse:
+    """Return only a bounded scheme classification, never the destination."""
+    scheme = urlsplit(url).scheme.lower()
+    return PlainTextResponse(f"URL scheme accepted: {scheme or 'none'}")
+
+
+@app.get("/ssrf/collision", response_class=PlainTextResponse)
+def ssrf_collision(url: str) -> PlainTextResponse:
+    """Simulate a canary marker already present in baseline output."""
+    identifier = parse_qs(urlsplit(url).query).get("id", [""])[0]
+    root = identifier.rsplit("-", 1)[-1]
+    canary_identifier = f"or-ssrf-canary-{root}"
+    return PlainTextResponse(
+        controlled_content_marker("canary", canary_identifier)
+    )
+
+
+@app.get("/ssrf/filter", response_class=PlainTextResponse)
+def ssrf_filter(url: str) -> PlainTextResponse:
+    """Simulate a request filter rejecting controlled URL probes."""
+    return PlainTextResponse("request blocked by security policy", status_code=403)
+
+
+@app.get("/ssrf/redirect")
+def ssrf_redirect(url: str) -> RedirectResponse:
+    """Return a redirect that the scoped validation transport must not follow."""
+    return RedirectResponse(url=url, status_code=307)
 
 
 @app.get("/debug-config", response_class=PlainTextResponse)

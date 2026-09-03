@@ -12,6 +12,7 @@ from app.scanning.normalizer import (
     HttpScannerRecord,
     normalize_exposed_resource_record,
     normalize_reflected_xss_record,
+    normalize_ssrf_record,
 )
 from app.validation.dispatcher import dispatch
 from app.validation.command_execution import (
@@ -185,6 +186,11 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
                 "generic-http-reflected-xss",
                 "local-fixture-reflected-xss-check",
             ),
+            "ssrf": (
+                "ssrf",
+                "generic-http-ssrf",
+                "local-fixture-ssrf-check",
+            ),
             "command_execution": (
                 "command_execution",
                 "generic-http-command-execution",
@@ -235,6 +241,87 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
         self.assertIsNone(validation["finding"]["mitre_technique_id"])
         self.assertEqual(validation["finding"]["provides"], [])
 
+    def test_live_ssrf_confirms_controlled_retrieval_without_mapping(self):
+        validation = self.validation("ssrf")
+        evidence = validation["validation_result"]["evidence"]
+
+        self.assertEqual(
+            validation["validation_result"]["validator"],
+            "generic_http_ssrf",
+        )
+        self.assertEqual(
+            validation["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertTrue(evidence["canary_content_marker_observed"])
+        self.assertFalse(evidence["canary_marker_observed_in_negative_control"])
+        self.assertEqual(evidence["dangerous_destinations_probed"], [])
+        self.assertIsNone(validation["finding"]["mitre_technique_id"])
+        self.assertEqual(validation["finding"]["provides"], [])
+
+    def test_fixture_ssrf_sink_rejects_arbitrary_destination(self):
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            response = client.get(
+                f"{self.origin}/ssrf/fetch",
+                params={"url": "https://example.invalid/not-requested"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.text,
+            "controlled destination rejected",
+        )
+
+    def test_controlled_ssrf_fixture_cases_have_conservative_verdicts(self):
+        cases = {
+            "/ssrf/fetch": ValidationStatus.CONFIRMED,
+            "/ssrf/reflect": ValidationStatus.REJECTED,
+            "/ssrf/no-fetch": ValidationStatus.REJECTED,
+            "/ssrf/sanitized": ValidationStatus.REJECTED,
+            "/ssrf/collision": ValidationStatus.MANUAL_REVIEW,
+            "/ssrf/filter": ValidationStatus.MANUAL_REVIEW,
+            "/ssrf/redirect": ValidationStatus.MANUAL_REVIEW,
+        }
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            for index, (endpoint, expected) in enumerate(cases.items(), start=1):
+                with self.subTest(endpoint=endpoint):
+                    finding = normalize_ssrf_record(HttpScannerRecord(
+                        record_id=f"finding-live-ssrf-{index}",
+                        scan_id="scan-live-ssrf-cases",
+                        asset_id="asset-live-ssrf-cases",
+                        target=self.origin,
+                        endpoint=endpoint,
+                        http_method="GET",
+                        parameter_name="url",
+                        parameter_location="query",
+                        scanner_name="controlled_fixture",
+                        scanner_template_id=f"fixture-ssrf-{index}",
+                        vulnerability_type="ssrf",
+                    ))
+                    result = dispatch(finding, session=client)
+                    self.assertEqual(result.status, expected)
+
+    def test_controlled_ssrf_json_request_context_confirms(self):
+        finding = normalize_ssrf_record(HttpScannerRecord(
+            record_id="finding-live-ssrf-json",
+            scan_id="scan-live-ssrf-json",
+            asset_id="asset-live-ssrf-json",
+            target=self.origin,
+            endpoint="/ssrf/fetch-json",
+            http_method="POST",
+            parameter_name="url",
+            parameter_location="json",
+            scanner_name="controlled_fixture",
+            scanner_template_id="fixture-ssrf-json",
+            vulnerability_type="ssrf",
+            http_request_context={"json": {"preserved": "yes"}},
+        ))
+        with ScopedLoopbackHttpClient(self.origin) as client:
+            result = dispatch(finding, session=client)
+
+        self.assertEqual(result.status, ValidationStatus.CONFIRMED)
+        self.assertTrue(result.evidence["canary_content_marker_observed"])
+
     def test_live_exposure_confirms_with_conservative_capability(self):
         validation = self.validation("exposed_resource")
         self.assertEqual(
@@ -276,7 +363,7 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
 
     def test_attack_chain_contains_t1190_without_fabricated_mappings(self):
         chains = self.pipeline_result["chains"]
-        self.assertEqual(len(chains), 3)
+        self.assertEqual(len(chains), 4)
         t1190_chains = [
             chain for chain in chains
             if "T1190" in chain["mitre_techniques"]
@@ -305,6 +392,7 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
             {
                 (self.validation("exposed_resource")["finding"]["finding_id"],),
                 (self.validation("reflected_xss")["finding"]["finding_id"],),
+                (self.validation("ssrf")["finding"]["finding_id"],),
                 (
                     reachability_id,
                     self.validation("sql_injection")["finding"]["finding_id"],
@@ -317,6 +405,7 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
         non_mapped_ids = {
             self.validation("reflected_xss")["finding"]["finding_id"],
             self.validation("exposed_resource")["finding"]["finding_id"],
+            self.validation("ssrf")["finding"]["finding_id"],
         }
         for chain in chains:
             for step in chain["steps"]:
@@ -344,6 +433,9 @@ class TestLiveMultiValidatorIntegration(unittest.TestCase):
                 "/search",
                 "/debug-config",
                 "/admin/diagnostics",
+                "/ssrf/fetch",
+                "/__obsidian_ssrf/canary",
+                "/__obsidian_ssrf/control",
             },
         )
 

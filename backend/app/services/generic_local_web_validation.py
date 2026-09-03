@@ -24,6 +24,7 @@ from app.scanning.normalizer import (
     normalize_exposed_resource_record,
     normalize_http_sqli_record,
     normalize_reflected_xss_record,
+    normalize_ssrf_record,
 )
 from app.validation.dispatcher import apply_validation_result, dispatch
 
@@ -251,6 +252,18 @@ def _scanner_records(
             evidence={"fixture_endpoint": True},
             **common,
         ),
+        "ssrf": HttpScannerRecord(
+            record_id=f"finding-{uuid4()}",
+            endpoint="/ssrf/fetch",
+            http_method="GET",
+            parameter_name="url",
+            parameter_location="query",
+            scanner_template_id="local-fixture-ssrf-check",
+            vulnerability_type="ssrf",
+            severity="high",
+            evidence={"fixture_endpoint": True},
+            **common,
+        ),
         "command_execution": HttpScannerRecord(
             record_id=f"finding-{uuid4()}",
             endpoint="/admin/diagnostics",
@@ -306,6 +319,7 @@ def execute_local_multi_validator_pipeline(
     findings = {
         "sql_injection": normalize_http_sqli_record(records["sql_injection"]),
         "reflected_xss": normalize_reflected_xss_record(records["reflected_xss"]),
+        "ssrf": normalize_ssrf_record(records["ssrf"]),
         "command_execution": normalize_command_execution_record(
             records["command_execution"]
         ),

@@ -360,6 +360,78 @@ class SecurityPresentationTests(unittest.TestCase):
         )
         self.assertEqual(presentation["risk"]["rating"], "Not rated")
 
+    def test_confirmed_ssrf_presents_retrieval_not_reflection_and_safe_scope(self):
+        ssrf = finding(
+            "finding-ssrf",
+            "ssrf",
+            endpoint="/ssrf/fetch",
+            parameter="url",
+            technique_id=None,
+            provides=[],
+        )
+        ssrf_validation = {
+            "status": "confirmed",
+            "confidence": 0.97,
+            "validator": "generic_http_ssrf",
+            "method": "controlled same-origin canary retrieval",
+            "evidence": {
+                "detection_method": "same_origin_controlled_canary_content_differential",
+                "destination_policy": "same_origin_controlled_http_only",
+                "dangerous_destinations_probed": [],
+                "infrastructure": {
+                    "controlled_canary": {"expected_marker_observed": True},
+                    "negative_control": {"expected_marker_observed": True},
+                },
+                "probes": {
+                    "baseline": {
+                        "state": "completed",
+                        "input_url_reflected": False,
+                        "url_transformation": "absent",
+                    },
+                    "controlled_canary": {
+                        "state": "completed",
+                        "input_url_reflected": False,
+                        "canary_content_marker_observed": True,
+                        "url_transformation": "absent",
+                    },
+                    "negative_control": {
+                        "state": "completed",
+                        "input_url_reflected": False,
+                        "canary_content_marker_observed": False,
+                        "url_transformation": "absent",
+                    },
+                },
+                "canary_url_reflected": False,
+                "canary_content_marker_observed": True,
+                "negative_control_marker_observed": True,
+                "reflection_only": False,
+                "winning_signal": "unique_controlled_canary_content_retrieved",
+                "decision": "confirmed",
+                "reason": "controlled_server_side_retrieval_confirmed",
+            },
+        }
+        presentation = self.decorate(ssrf, ssrf_validation)[
+            "finding_presentations"
+        ][0]
+
+        self.assertEqual(
+            presentation["poc"]["verification_method"],
+            "Controlled same-origin canary retrieval",
+        )
+        self.assertIn(
+            "server-side HTTP retrieval",
+            presentation["poc"]["interpretation"],
+        )
+        self.assertIn("No loopback admin service", presentation["poc"]["safety_note"])
+        self.assertEqual(
+            presentation["poc"]["observed_evidence"]
+            ["dangerous_destinations_probed"],
+            [],
+        )
+        self.assertIsNone(presentation["mitre"])
+        self.assertEqual(presentation["risk"]["rating"], "High")
+        self.assertEqual(presentation["risk"]["cvss"], "Not supplied")
+
     def test_attack_flow_explains_capability_dependencies_and_cumulative_risk(self):
         command = finding(
             "finding-command",

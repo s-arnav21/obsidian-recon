@@ -583,12 +583,12 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
     def validation(self, name):
         return self.body["validations"][name]
 
-    def test_scenario_is_accepted_and_returns_four_findings(self):
+    def test_scenario_is_accepted_and_returns_five_findings(self):
         self.assertEqual(self.response.status_code, 200)
         self.assertEqual(self.body["scenario"], GENERIC_LOCAL_WEB_SCENARIO)
         self.assertEqual(self.body["mode"], "live_loopback_fixture")
-        self.assertEqual(len(self.body["findings"]), 4)
-        self.assertEqual(len(self.body["validations"]), 4)
+        self.assertEqual(len(self.body["findings"]), 5)
+        self.assertEqual(len(self.body["validations"]), 5)
 
     def test_sqli_is_confirmed_and_mapped_to_t1190(self):
         result = self.validation("sql_injection")
@@ -613,6 +613,24 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
             "generic_http_reflected_xss",
         )
         self.assertIsNone(result["finding"]["mitre_technique_id"])
+
+    def test_ssrf_is_confirmed_without_fabricated_mitre_or_capability(self):
+        result = self.validation("ssrf")
+
+        self.assertEqual(
+            result["validation_result"]["status"],
+            ValidationStatus.CONFIRMED,
+        )
+        self.assertEqual(
+            result["validation_result"]["validator"],
+            "generic_http_ssrf",
+        )
+        self.assertTrue(
+            result["validation_result"]["evidence"]
+            ["canary_content_marker_observed"]
+        )
+        self.assertIsNone(result["finding"]["mitre_technique_id"])
+        self.assertEqual(result["finding"]["provides"], [])
 
     def test_exposure_is_confirmed_with_conservative_capability(self):
         result = self.validation("exposed_resource")
@@ -647,7 +665,7 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
     def test_attack_chains_and_steps_are_serialized(self):
         chain_result = self.body["chain_result"]
         self.assertEqual(chain_result["status"], "confirmed")
-        self.assertEqual(len(chain_result["chains"]), 3)
+        self.assertEqual(len(chain_result["chains"]), 4)
         self.assertTrue(all(chain["steps"] for chain in chain_result["chains"]))
         self.assertEqual(chain_result["chains"], self.body["chains"])
         progression = next(
@@ -682,7 +700,7 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
         )
         self.assertEqual(self.body["overall_status"], "completed")
         self.assertEqual(self.body["presentation_mode"], "controlled_lab")
-        self.assertEqual(len(self.body["finding_presentations"]), 4)
+        self.assertEqual(len(self.body["finding_presentations"]), 5)
         self.assertTrue(self.body["attack_flow"]["multi_stage_paths"])
         for result in self.body["validations"].values():
             self.assertTrue({
@@ -719,6 +737,14 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
         self.assertEqual(
             presentations["command_execution"]["risk"]["rating"],
             "Critical",
+        )
+        self.assertEqual(
+            presentations["ssrf"]["poc"]["verification_method"],
+            "Controlled same-origin canary retrieval",
+        )
+        self.assertIn(
+            "No loopback admin service",
+            presentations["ssrf"]["poc"]["safety_note"],
         )
         progression = next(
             path

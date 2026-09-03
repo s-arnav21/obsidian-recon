@@ -7,6 +7,7 @@ from app.scanning.normalizer import (
     normalize_exposed_resource_record,
     normalize_http_sqli_record,
     normalize_reflected_xss_record,
+    normalize_ssrf_record,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "normalize_exposed_resource_record",
     "normalize_http_sqli_record",
     "normalize_reflected_xss_record",
+    "normalize_ssrf_record",
 ]

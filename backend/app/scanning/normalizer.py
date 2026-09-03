@@ -13,10 +13,16 @@ from app.scanning.models import ScannerCandidateRecord
 
 GENERIC_SQLI_VALIDATOR_ID = "generic-http-sqli"
 GENERIC_REFLECTED_XSS_VALIDATOR_ID = "generic-http-reflected-xss"
+GENERIC_SSRF_VALIDATOR_ID = "generic-http-ssrf"
 GENERIC_EXPOSED_RESOURCE_VALIDATOR_ID = "generic-http-exposed-resource"
 GENERIC_COMMAND_EXECUTION_VALIDATOR_ID = "generic-http-command-execution"
 RECON_MANUAL_REVIEW_VALIDATOR_ID = "recon-manual-review"
 REFLECTED_XSS_REQUEST_SHAPES = frozenset(
+    (method, location)
+    for method in ("GET", "POST", "PUT", "PATCH")
+    for location in ("query", "form", "json", "cookie", "header")
+)
+SSRF_REQUEST_SHAPES = frozenset(
     (method, location)
     for method in ("GET", "POST", "PUT", "PATCH")
     for location in ("query", "form", "json", "cookie", "header")
@@ -37,6 +43,7 @@ REFLECTED_XSS_TYPES = frozenset({
     "reflected_xss",
     "xss",
 })
+SSRF_TYPES = frozenset({"server_side_request_forgery", "ssrf"})
 EXPOSURE_TYPE_MAP = {
     "configuration_exposure": "sensitive_data_exposure",
     "exposed_resource": "sensitive_data_exposure",
@@ -298,6 +305,25 @@ def normalize_reflected_xss_record(record: HttpScannerRecord) -> Finding:
     )
 
 
+def normalize_ssrf_record(record: HttpScannerRecord) -> Finding:
+    """Convert one trusted scanner observation into a canonical SSRF Finding."""
+    if not isinstance(record, HttpScannerRecord):
+        raise TypeError("record must be an HttpScannerRecord")
+
+    normalized_type = _normalized_type_name(record.vulnerability_type)
+    if normalized_type not in SSRF_TYPES:
+        raise ScannerNormalizationError(
+            "vulnerability_type must identify server-side request forgery"
+        )
+    return _normalize_parameterized_record(
+        record,
+        vulnerability_type="ssrf",
+        validator_id=GENERIC_SSRF_VALIDATOR_ID,
+        request_shape_error="unsupported SSRF request shape",
+        supported_request_shapes=SSRF_REQUEST_SHAPES,
+    )
+
+
 def normalize_command_execution_record(record: HttpScannerRecord) -> Finding:
     """Normalize a trusted synthetic command-execution sink observation."""
     if not isinstance(record, HttpScannerRecord):
@@ -428,6 +454,8 @@ def normalize_scanner_candidate(record: ScannerCandidateRecord) -> Finding:
         and (
             (method, location) in SQLI_REQUEST_SHAPES
             if normalized_type in SQLI_TYPES
+            else (method, location) in SSRF_REQUEST_SHAPES
+            if normalized_type in SSRF_TYPES
             else (method, location) in REFLECTED_XSS_REQUEST_SHAPES
         )
     )
@@ -442,6 +470,10 @@ def normalize_scanner_candidate(record: ScannerCandidateRecord) -> Finding:
         canonical_type = "reflected_xss"
         if complete_parameter_context:
             validator_id = GENERIC_REFLECTED_XSS_VALIDATOR_ID
+    elif normalized_type in SSRF_TYPES:
+        canonical_type = "ssrf"
+        if complete_parameter_context:
+            validator_id = GENERIC_SSRF_VALIDATOR_ID
     elif normalized_type in EXPOSURE_TYPE_MAP:
         canonical_type = EXPOSURE_TYPE_MAP[normalized_type]
         if record.endpoint:

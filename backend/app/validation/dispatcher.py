@@ -17,6 +17,7 @@ from app.validation.command_execution import (
 )
 from app.validation.exposure import validate_generic_exposed_resource
 from app.validation.sql_injection import validate_generic_http_sqli
+from app.validation.ssrf import validate_generic_http_ssrf
 from app.validation.xss import validate_generic_reflected_xss
 
 
@@ -38,6 +39,7 @@ def register(template_id: str) -> Callable[[ValidationHandler], ValidationHandle
 
 register("generic-http-sqli")(validate_generic_http_sqli)
 register("generic-http-reflected-xss")(validate_generic_reflected_xss)
+register("generic-http-ssrf")(validate_generic_http_ssrf)
 register("generic-http-exposed-resource")(validate_generic_exposed_resource)
 register("generic-http-command-execution")(
     validate_generic_http_command_execution

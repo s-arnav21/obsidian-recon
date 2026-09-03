@@ -33,6 +33,7 @@ TYPE_ALIASES = {
     "sqli": "sql_injection",
     "cross_site_scripting": "reflected_xss",
     "reflected_cross_site_scripting": "reflected_xss",
+    "server_side_request_forgery": "ssrf",
     "sensitive_data_exposure": "information_disclosure",
     "debug_resource_exposure": "information_disclosure",
     "directory_resource_disclosure": "information_disclosure",
@@ -82,6 +83,24 @@ RISK_PROFILES: Dict[str, Dict[str, Any]] = {
             "integrity": "A real exploit could alter content presented in an affected user's session.",
             "availability": "Direct service-availability impact is generally limited.",
             "consequences": ["User-session exposure", "Unauthorized browser-side actions", "Loss of user trust"],
+        },
+    },
+    "ssrf": {
+        "cia": {"confidentiality": "High", "integrity": "Moderate", "availability": "Moderate"},
+        "technical_impact": [
+            "Server-side retrieval of an attacker-influenced URL",
+            "Potential reachability of services unavailable to the initiating client",
+        ],
+        "business": {
+            "confidentiality": "A real SSRF flaw may expose data from services reachable by the application server.",
+            "integrity": "Requests issued with the server's network position could potentially reach state-changing internal endpoints.",
+            "availability": "Poorly constrained server-side requests may consume resources or interact with operational services.",
+            "consequences": [
+                "Internal service exposure",
+                "Cloud-metadata exposure where separately reachable",
+                "Access to internal management interfaces",
+                "Server-side network pivoting risk",
+            ],
         },
     },
     "information_disclosure": {
@@ -149,6 +168,29 @@ def _safe_observed_evidence(vulnerability_type: str, evidence: Mapping[str, Any]
                 "reflection_observed",
                 "strong_structural_signals",
                 "probes",
+                "request_timeout_seconds",
+                "maximum_request_attempts",
+                "reason",
+                "decision",
+            )
+            if key in evidence
+        }
+    if vulnerability_type == "ssrf" and isinstance(evidence.get("probes"), dict):
+        return {
+            key: deepcopy(evidence[key])
+            for key in (
+                "detection_method",
+                "destination_policy",
+                "dangerous_destinations_probed",
+                "infrastructure",
+                "probes",
+                "baseline_marker_collision",
+                "canary_url_reflected",
+                "canary_content_marker_observed",
+                "negative_control_marker_observed",
+                "reflection_only",
+                "winning_signal",
+                "waf_or_filter_interference",
                 "request_timeout_seconds",
                 "maximum_request_attempts",
                 "reason",
@@ -429,6 +471,57 @@ def _poc(
                 "or data extraction was used."
             ),
         })
+    elif vulnerability_type == "ssrf":
+        probes = evidence.get("probes")
+        if isinstance(probes, dict):
+            probe_names = {
+                "baseline": "Baseline Control",
+                "controlled_canary": "Controlled HTTP Canary",
+                "negative_control": "Negative Control",
+            }
+            common["detection_methods"] = [
+                {
+                    "id": probe_id,
+                    "name": probe_names[probe_id],
+                    "state": (
+                        "confirmed"
+                        if probe_id == "controlled_canary"
+                        and probe.get("canary_content_marker_observed")
+                        else "completed"
+                        if probe.get("state") == "completed"
+                        else probe.get("state", "unknown")
+                    ),
+                    "reason": probe.get("reason"),
+                    "summary": (
+                        "Controlled canary content marker retrieved"
+                        if probe.get("canary_content_marker_observed")
+                        else "Input URL reflected only; retrieval not established"
+                        if probe.get("input_url_reflected")
+                        else probe.get("url_transformation", "not evaluated")
+                    ),
+                }
+                for probe_id, probe in probes.items()
+                if probe_id in probe_names
+            ]
+        common.update({
+            "verification_method": "Controlled same-origin canary retrieval",
+            "steps": [
+                "Verify the same-origin canary and negative-control infrastructure.",
+                "Send fixed baseline, canary, and negative-control destinations.",
+                "Distinguish reflected URL text from content returned by the canary.",
+                "Confirm only when the unique canary content marker is attributable to the canary probe.",
+            ],
+            "interpretation": (
+                "The application returned content generated by the controlled canary, "
+                "demonstrating server-side HTTP retrieval."
+                if confirmed
+                else "A changed response or reflected URL alone did not establish server-side retrieval."
+            ),
+            "safety_note": (
+                "Testing used only same-origin controlled HTTP endpoints. No loopback admin service, "
+                "private-network service, cloud metadata endpoint, alternate URL scheme, or public callback was probed."
+            ),
+        })
     elif vulnerability_type == "information_disclosure":
         common.update({
             "verification_method": "Sensitive-resource response classification",
@@ -473,7 +566,13 @@ def _risk(
         "technical_impact": profile["technical_impact"],
         "business": profile["business"], "rationale": rationale,
         "notice": GENERALIZED_RISK_NOTICE, "cvss": "Not supplied",
-        "scope_note": "Potential impact of a real confirmed command-execution vulnerability" if vulnerability_type == "command_execution" else None,
+        "scope_note": (
+            "Potential impact of a real confirmed command-execution vulnerability"
+            if vulnerability_type == "command_execution"
+            else "Potential SSRF destination classes are explanatory only and were not actively probed."
+            if vulnerability_type == "ssrf"
+            else None
+        ),
     }
 
 
