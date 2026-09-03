@@ -27,6 +27,7 @@ def run_scanner_tool(
     *,
     timeout_seconds: float,
     maximum_output_bytes: int = 2_000_000,
+    scanner_name: str | None = None,
 ) -> str:
     if not arguments or not all(isinstance(value, str) and value for value in arguments):
         raise ValueError("scanner arguments must be non-empty strings")
@@ -41,7 +42,10 @@ def run_scanner_tool(
     except FileNotFoundError as exc:
         raise ScannerToolUnavailableError("configured scanner is unavailable") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ScannerToolTimeoutError("scanner exceeded its configured timeout") from exc
+        scanner_label = f"{scanner_name} scanner" if scanner_name else "scanner"
+        raise ScannerToolTimeoutError(
+            f"{scanner_label} exceeded its configured timeout"
+        ) from exc
 
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""

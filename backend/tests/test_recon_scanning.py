@@ -26,6 +26,15 @@ NMAP_XML = """<?xml version="1.0"?>
   <port protocol="tcp" portid="80"><state state="closed"/></port>
 </ports></host></nmaprun>"""
 
+REAL_NMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///opt/homebrew/share/nmap/nmap.xsl" type="text/xsl"?>
+<nmaprun scanner="nmap" xmloutputversion="1.05"><host>
+<address addr="127.0.0.1" addrtype="ipv4"/><ports>
+<port protocol="tcp" portid="8090"><state state="open"/>
+<service name="http" product="uvicorn" version="test"/></port>
+</ports></host></nmaprun>"""
+
 
 class ReconScopeTests(unittest.TestCase):
     def test_authorization_and_loopback_are_required(self):
@@ -49,6 +58,15 @@ class ReconScopeTests(unittest.TestCase):
 
 
 class NmapAdapterTests(unittest.TestCase):
+    def test_real_nmap_prolog_and_xml_declaration_parse_successfully(self):
+        discovery = parse_nmap_discovery(
+            REAL_NMAP_XML,
+            asset_id="asset-1",
+        )
+        self.assertEqual(discovery.ip_addresses, ("127.0.0.1",))
+        self.assertEqual(len(discovery.services), 1)
+        self.assertEqual(discovery.services[0].port, 8090)
+
     def test_parser_preserves_open_service_metadata(self):
         services = parse_nmap_xml(NMAP_XML, asset_id="asset-1")
         self.assertEqual(len(services), 1)
@@ -59,7 +77,14 @@ class NmapAdapterTests(unittest.TestCase):
         self.assertEqual(discovery.ip_addresses, ("127.0.0.1",))
 
     def test_parser_rejects_malformed_or_unsafe_xml(self):
-        for output in ("not xml", "<!DOCTYPE x><nmaprun/>"):
+        unsafe_documents = (
+            "not xml",
+            "<!DOCTYPE x><nmaprun/>",
+            '<!DOCTYPE nmaprun [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            "<nmaprun>&xxe;</nmaprun>",
+            "<!ENTITY xxe 'unsafe'><nmaprun/>",
+        )
+        for output in unsafe_documents:
             with self.subTest(output=output), self.assertRaises(ScannerOutputError):
                 parse_nmap_xml(output, asset_id="asset-1")
 
@@ -78,6 +103,12 @@ class NmapAdapterTests(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "/opt/tools/nmap")
         self.assertEqual(calls[0][0][-1], "127.0.0.1")
         self.assertIn("-oX", calls[0][0])
+        self.assertEqual(
+            calls[0][0][calls[0][0].index("-p") + 1],
+            "8090",
+        )
+        self.assertIn("-Pn", calls[0][0])
+        self.assertEqual(calls[0][1]["scanner_name"], "nmap")
 
 
 class NucleiAdapterTests(unittest.TestCase):
@@ -170,6 +201,23 @@ class NucleiAdapterTests(unittest.TestCase):
         )
         self.assertEqual(calls[0][0][0], "/opt/tools/nuclei")
         self.assertIn(self.target.origin, calls[0][0])
+        self.assertEqual(
+            calls[0][0][calls[0][0].index("-type") + 1],
+            "http",
+        )
+        self.assertIn("-disable-redirects", calls[0][0])
+        self.assertIn("-no-interactsh", calls[0][0])
+        self.assertIn("-disable-update-check", calls[0][0])
+        self.assertIn("-omit-raw", calls[0][0])
+        self.assertEqual(
+            calls[0][0][calls[0][0].index("-timeout") + 1],
+            "3",
+        )
+        self.assertEqual(
+            calls[0][0][calls[0][0].index("-rate-limit") + 1],
+            "25",
+        )
+        self.assertEqual(calls[0][1]["scanner_name"], "nuclei")
 
 
 class ScannerToolRunnerTests(unittest.TestCase):
@@ -196,6 +244,30 @@ class ScannerToolRunnerTests(unittest.TestCase):
         run.return_value = subprocess.CompletedProcess(["tool"], 2, "", "secret")
         with self.assertRaisesRegex(ScannerToolError, "stderr_bytes=6"):
             run_scanner_tool(["tool"], timeout_seconds=1)
+
+    @patch("app.scanning.tool_runner.subprocess.run")
+    def test_timeout_identifies_nmap_without_exposing_command(self, run):
+        run.side_effect = subprocess.TimeoutExpired(["secret-command"], 30)
+        target = authorize_target("http://127.0.0.1:8090", authorized=True)
+        with self.assertRaisesRegex(
+            ScannerToolTimeoutError,
+            "^nmap scanner exceeded its configured timeout$",
+        ):
+            NmapScanner("/opt/tools/nmap").scan(target, asset_id="asset-1")
+
+    @patch("app.scanning.tool_runner.subprocess.run")
+    def test_timeout_identifies_nuclei_without_exposing_command(self, run):
+        run.side_effect = subprocess.TimeoutExpired(["secret-command"], 60)
+        target = authorize_target("http://127.0.0.1:8090", authorized=True)
+        with self.assertRaisesRegex(
+            ScannerToolTimeoutError,
+            "^nuclei scanner exceeded its configured timeout$",
+        ):
+            NucleiScanner("/opt/tools/nuclei").scan(
+                target,
+                scan_id="scan-1",
+                asset_id="asset-1",
+            )
 
 
 if __name__ == "__main__":

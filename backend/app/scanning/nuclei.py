@@ -11,6 +11,14 @@ from app.scanning.scope import AuthorizedTarget, ReconScopeError
 from app.scanning.tool_runner import ScannerOutputError, run_scanner_tool
 
 
+PROTOTYPE_TEMPLATE_IDS = (
+    "tech-detect",
+    "openapi",
+    "redoc-api-docs",
+    "http-missing-security-headers",
+)
+
+
 def _same_origin(url: str, target: AuthorizedTarget) -> bool:
     try:
         parsed = urlsplit(url)
@@ -144,13 +152,33 @@ class NucleiScanner:
                 self.binary_path,
                 "-u",
                 target.origin,
+                "-type",
+                "http",
+                "-id",
+                ",".join(PROTOTYPE_TEMPLATE_IDS),
                 "-jsonl",
                 "-silent",
                 "-no-color",
+                "-omit-raw",
+                "-omit-template",
                 "-disable-redirects",
                 "-no-interactsh",
+                "-disable-update-check",
+                "-timeout",
+                "3",
+                "-retries",
+                "0",
+                "-rate-limit",
+                "25",
+                "-bulk-size",
+                "5",
+                "-concurrency",
+                "5",
+                "-max-host-error",
+                "5",
             ],
             timeout_seconds=self.timeout_seconds,
+            scanner_name="nuclei",
         )
         return parse_nuclei_jsonl(
             output,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from typing import Callable, List
@@ -17,6 +18,24 @@ class NmapDiscovery:
     services: tuple[ServiceObservation, ...]
 
 
+_STANDARD_NMAP_DOCTYPE = re.compile(
+    r"^[ \t]*<!DOCTYPE[ \t]+nmaprun[ \t]*>[ \t]*(?:\r?\n|$)",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _remove_standard_nmap_doctype(output: str) -> str:
+    """Remove Nmap's fixed empty DOCTYPE without allowing DTD processing."""
+    matches = list(_STANDARD_NMAP_DOCTYPE.finditer(output))
+    if len(matches) > 1:
+        raise ScannerOutputError("Nmap XML contains an unsafe DTD declaration")
+    sanitized = _STANDARD_NMAP_DOCTYPE.sub("", output, count=1)
+    upper = sanitized.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+        raise ScannerOutputError("Nmap XML contains an unsafe DTD declaration")
+    return sanitized
+
+
 def parse_nmap_discovery(
     output: str,
     *,
@@ -27,10 +46,9 @@ def parse_nmap_discovery(
         raise TypeError("Nmap output must be text")
     if len(output.encode("utf-8")) > maximum_output_bytes:
         raise ScannerOutputError("Nmap output exceeded the configured limit")
-    if "<!DOCTYPE" in output.upper() or "<!ENTITY" in output.upper():
-        raise ScannerOutputError("Nmap XML declarations are not supported")
+    sanitized_output = _remove_standard_nmap_doctype(output)
     try:
-        root = ElementTree.fromstring(output)
+        root = ElementTree.fromstring(sanitized_output)
     except ElementTree.ParseError as exc:
         raise ScannerOutputError("Nmap returned malformed XML") from exc
 
@@ -102,12 +120,20 @@ class NmapScanner:
         output = self.runner(
             [
                 self.binary_path,
+                "-Pn",
                 "-sV",
                 "--version-light",
+                "--max-retries",
+                "1",
+                "--host-timeout",
+                "20s",
+                "-p",
+                str(target.port),
                 "-oX",
                 "-",
                 target.hostname,
             ],
             timeout_seconds=self.timeout_seconds,
+            scanner_name="nmap",
         )
         return parse_nmap_discovery(output, asset_id=asset_id)
