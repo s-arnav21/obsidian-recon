@@ -1,6 +1,12 @@
 """Provider-independent, bounded single-agent foundation."""
 
 from app.agent.executor import AgentExecution, AgentToolExecutor
+from app.agent.llm_client import (
+    LLMClientConfig,
+    LLMClientError,
+    OpenAICompatibleClient,
+)
+from app.agent.llm_planner import LLMPlanner, LLMPlanningError
 from app.agent.models import AgentAction, AgentObservation, AgentState, AgentStatus
 from app.agent.orchestrator import AgentOrchestrator, Planner
 from app.agent.policy import AgentPolicyGate, PolicyDecision, PolicyDecisionCode
@@ -17,6 +23,11 @@ __all__ = [
     "AgentToolDefinition",
     "AgentToolExecutor",
     "AgentToolRegistry",
+    "LLMClientConfig",
+    "LLMClientError",
+    "LLMPlanner",
+    "LLMPlanningError",
+    "OpenAICompatibleClient",
     "Planner",
     "PolicyDecision",
     "PolicyDecisionCode",
