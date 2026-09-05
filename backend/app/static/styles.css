@@ -129,6 +129,11 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .authorization { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0 5px; color: var(--muted); font-weight: 500; }
 .authorization input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--accent); }
 
+.dev-bypass { margin: 8px 0; padding: 13px 15px; border: 1px solid #7d5c27; border-radius: 8px; background: #271f11; }
+.dev-bypass-label { margin: 0; color: var(--warning); font: 800 .72rem ui-monospace, monospace; letter-spacing: .12em; }
+.dev-bypass .authorization { margin-top: 8px; color: #f1d99e; }
+.dev-bypass-warning { margin: 10px 0 0; padding: 9px 11px; border: 1px solid var(--danger); border-radius: 6px; background: #301619; color: #ff9da3; font: 800 .74rem ui-monospace, monospace; letter-spacing: .035em; }
+
 .primary-button, .secondary-button {
   width: 100%;
   border: 1px solid var(--accent);

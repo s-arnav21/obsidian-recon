@@ -31,18 +31,28 @@ router = APIRouter(prefix="/api/test-harness", tags=["test-harness"])
 
 
 class TestHarnessRequest(BaseModel):
-    """Only the three fields accepted by the local fixture endpoint."""
+    """Strict request accepted by the controlled test-harness endpoint."""
 
     model_config = ConfigDict(extra="forbid")
 
     target_url: str
     scenario: str
     authorized: StrictBool
+    skip_dns_verification: StrictBool = False
 
 
 @lru_cache
 def get_test_harness_pipeline() -> TestHarnessPipeline:
     return TestHarnessPipeline()
+
+
+@router.get("/config")
+def get_test_harness_config(
+    pipeline: TestHarnessPipeline = Depends(get_test_harness_pipeline),
+) -> Dict[str, bool]:
+    return {
+        "development_dns_bypass_enabled": pipeline.dev_dns_bypass_enabled,
+    }
 
 
 @router.post("/run")
@@ -57,6 +67,7 @@ def run_test_harness(
             scenario=request.scenario,
             authorized=request.authorized,
             persistence_session=session,
+            skip_dns_verification=request.skip_dns_verification,
         )
         return decorate_pipeline_response(result, controlled_lab=True)
     except AuthorizationRequiredError as exc:

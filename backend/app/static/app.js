@@ -510,6 +510,28 @@ function populateScenarios() {
   });
 }
 
+function setDevelopmentDnsBypassAvailability(enabled) {
+  const control = $("#dev-dns-bypass-control");
+  const checkbox = $("#skip-dns-verification");
+  const warning = $("#dev-dns-bypass-warning");
+  checkbox.checked = false;
+  checkbox.disabled = !enabled;
+  control.hidden = !enabled;
+  warning.hidden = true;
+}
+
+async function configureDevelopmentDnsBypass() {
+  setDevelopmentDnsBypassAvailability(false);
+  try {
+    const config = await requestJson("/api/test-harness/config");
+    setDevelopmentDnsBypassAvailability(
+      config.development_dns_bypass_enabled === true,
+    );
+  } catch (_error) {
+    setDevelopmentDnsBypassAvailability(false);
+  }
+}
+
 function initializeProgress() {
   const list = $("#progress-stages");
   list.replaceChildren();
@@ -728,8 +750,12 @@ $("#demo-form").addEventListener("submit", async (event) => {
       target_url: $("#demo-target").value,
       scenario: $("#scenario").value,
       authorized: $("#demo-authorized").checked,
+      skip_dns_verification: $("#skip-dns-verification").checked,
     });
-    renderResults(data, "Controlled Lab Demonstration");
+    const modeLabel = data.development_dns_bypass_used
+      ? "Controlled Demo · DEVELOPMENT DNS BYPASS"
+      : "Controlled Lab Demonstration";
+    renderResults(data, modeLabel);
     $("#scan-id").value = data.scan_id || "";
     message.textContent = "Controlled lab pipeline completed.";
   } catch (error) {
@@ -738,6 +764,10 @@ $("#demo-form").addEventListener("submit", async (event) => {
   } finally {
     setButtonLoading(button, false, "RUN CONTROLLED DEMO", "RUNNING…");
   }
+});
+
+$("#skip-dns-verification").addEventListener("change", (event) => {
+  $("#dev-dns-bypass-warning").hidden = !event.target.checked;
 });
 
 $("#lookup-form").addEventListener("submit", async (event) => {
@@ -767,3 +797,4 @@ $("#refresh-health").addEventListener("click", refreshHealth);
 populateScenarios();
 initializeProgress();
 refreshHealth();
+configureDevelopmentDnsBypass();

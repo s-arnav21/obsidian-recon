@@ -114,6 +114,16 @@
                 <input id="demo-authorized" name="authorized" type="checkbox" required>
                 <span>I confirm that this controlled target is authorized for testing.</span>
               </label>
+              <div id="dev-dns-bypass-control" class="dev-bypass" hidden>
+                <p class="dev-bypass-label">DEVELOPMENT ONLY</p>
+                <label class="authorization" for="skip-dns-verification">
+                  <input id="skip-dns-verification" name="skip_dns_verification" type="checkbox" disabled>
+                  <span>Skip DNS ownership verification for this TTP test.</span>
+                </label>
+                <p id="dev-dns-bypass-warning" class="dev-bypass-warning" role="alert" hidden>
+                  DNS OWNERSHIP CHECK BYPASSED — DEVELOPMENT TEST ONLY
+                </p>
+              </div>
               <button id="demo-button" class="primary-button" type="submit">RUN CONTROLLED DEMO</button>
             </form>
             <p id="demo-message" class="status-message" role="status" aria-live="polite"></p>

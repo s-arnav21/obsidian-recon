@@ -2,10 +2,12 @@
 
 import unittest
 from contextlib import contextmanager
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.api.test_harness import get_test_harness_pipeline
+from app.db.models import TargetVerificationORM
 from app.db.session import get_db
 from app.integrations.labs.dvwa import (
     DVWALabConfigurationError,
@@ -16,14 +18,17 @@ from app.models.finding import Finding, ValidationStatus
 from app.models.validation import ValidationResult
 from app.services.generic_local_web_validation import (
     GENERIC_LOCAL_WEB_SCENARIO,
+    GenericLocalWebRun,
     LocalTargetConnectionError,
 )
 from app.services.test_harness import (
     AuthorizationRequiredError,
+    DEV_DNS_BYPASS_ENV,
     InvalidTargetError,
     TargetNotAllowedError,
     TestHarnessPipeline,
 )
+from app.services.target_verification import TargetVerificationService
 from app.validation.dispatcher import dispatch
 from tests.integration_apps.vulnerable_web_app import LocalVulnerableAppServer
 from tests.db_utils import make_test_session_factory
@@ -315,6 +320,271 @@ class TestHarnessPipelineTests(unittest.TestCase):
             )
 
 
+class HarnessVerificationDns:
+    def __init__(self):
+        self.txt = {}
+        self.addresses = {}
+
+    def resolve_txt(self, name):
+        return tuple(self.txt.get(name, ()))
+
+    def resolve_addresses(self, hostname):
+        return tuple(self.addresses.get(hostname, ("93.184.216.34",)))
+
+
+class GenericExternalVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.engine, self.factory = make_test_session_factory()
+        self.dns = HarnessVerificationDns()
+        self.verification = TargetVerificationService(dns_resolver=self.dns)
+        self.external_executions = []
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def pipeline(self, **overrides):
+        options = {
+            "mode": "fixture",
+            "allowed_origins": [],
+            "target_verification_service": self.verification,
+            "verified_external_scenario_executor": self.external_executor,
+            "dev_dns_bypass_enabled": False,
+        }
+        options.update(overrides)
+        return TestHarnessPipeline(**options)
+
+    def external_executor(
+        self,
+        target,
+        *,
+        scan_id,
+        address_resolver,
+    ):
+        self.external_executions.append(target)
+        self.assertEqual(
+            address_resolver(target.hostname),
+            ("93.184.216.34",),
+        )
+        asset_id = f"asset-{scan_id[-12:]}"
+        reachability = Finding(
+            finding_id=f"finding-{scan_id[-12:]}",
+            scan_id=scan_id,
+            asset_id=asset_id,
+            target=target.origin,
+            host=target.hostname,
+            port=target.port,
+            protocol=target.scheme,
+            endpoint="/",
+            source="verified_external_test",
+            vulnerability_type="service_scan",
+            validation_status=ValidationStatus.CONFIRMED,
+            validation_confidence=1.0,
+        )
+        return GenericLocalWebRun(
+            origin=target.origin,
+            scan_id=scan_id,
+            asset_id=asset_id,
+            reachability=reachability,
+            validations=(),
+            chains=(),
+        )
+
+    def verify(self, session, origin):
+        pending = self.verification.create_challenge(
+            session,
+            target_url=origin,
+        )
+        self.dns.txt[pending.txt_record_name] = (pending.txt_record_value,)
+        verified = self.verification.verify_challenge(session, pending.id)
+        self.assertEqual(verified.status, "verified")
+        session.commit()
+
+    def test_loopback_generic_target_keeps_existing_runner_path(self):
+        received = []
+        pipeline = self.pipeline(
+            generic_scenario_runner=lambda origin: (
+                received.append(origin) or {"target_url": origin}
+            ),
+        )
+
+        result = pipeline.run(
+            target_url="http://127.0.0.1:8090",
+            scenario=GENERIC_LOCAL_WEB_SCENARIO,
+            authorized=True,
+        )
+
+        self.assertEqual(result["target_url"], "http://127.0.0.1:8090")
+        self.assertEqual(received, ["http://127.0.0.1:8090"])
+        self.assertEqual(self.external_executions, [])
+        self.assertFalse(result["development_dns_bypass_used"])
+
+    def test_external_target_without_verification_is_rejected(self):
+        with self.factory() as session:
+            with self.assertRaisesRegex(
+                TargetNotAllowedError,
+                "DNS ownership verification",
+            ):
+                self.pipeline().run(
+                    target_url="https://unverified.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                    skip_dns_verification=False,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_bypass_request_is_rejected_when_server_flag_is_disabled(self):
+        with self.factory() as session:
+            with self.assertRaisesRegex(TargetNotAllowedError, "disabled"):
+                self.pipeline().run(
+                    target_url="https://unverified.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                    skip_dns_verification=True,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_enabled_server_flag_without_request_still_requires_verification(self):
+        with self.factory() as session:
+            with self.assertRaisesRegex(
+                TargetNotAllowedError,
+                "DNS ownership verification",
+            ):
+                self.pipeline(dev_dns_bypass_enabled=True).run(
+                    target_url="https://unverified.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                    skip_dns_verification=False,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_two_part_gate_bypasses_only_persisted_ownership_check(self):
+        origin = "https://bypass.example.com"
+        with self.factory() as session:
+            pending = self.verification.create_challenge(
+                session,
+                target_url=origin,
+            )
+            session.commit()
+
+            result = self.pipeline(dev_dns_bypass_enabled=True).run(
+                target_url=origin,
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=True,
+                persistence_session=session,
+                skip_dns_verification=True,
+            )
+            record = session.get(TargetVerificationORM, pending.id)
+
+        self.assertTrue(result["development_dns_bypass_used"])
+        self.assertEqual(len(self.external_executions), 1)
+        self.assertEqual(record.status, "pending")
+        self.assertIsNone(record.verified_at)
+
+    def test_verified_exact_external_origin_is_allowed(self):
+        origin = "https://verified.example.com"
+        with self.factory() as session:
+            self.verify(session, origin)
+            result = self.pipeline().run(
+                target_url=origin,
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=True,
+                persistence_session=session,
+                skip_dns_verification=False,
+            )
+
+        self.assertEqual(result["target_url"], origin)
+        self.assertFalse(result["development_dns_bypass_used"])
+        self.assertEqual(len(self.external_executions), 1)
+        self.assertEqual(self.external_executions[0].origin, origin)
+        self.assertEqual(
+            self.external_executions[0].resolved_addresses,
+            ("93.184.216.34",),
+        )
+
+    def test_verified_origin_does_not_authorize_a_different_subdomain(self):
+        with self.factory() as session:
+            self.verify(session, "https://app.example.com")
+            with self.assertRaisesRegex(
+                TargetNotAllowedError,
+                "exact external target origin",
+            ):
+                self.pipeline().run(
+                    target_url="https://admin.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_external_http_target_is_rejected(self):
+        with self.factory() as session:
+            with self.assertRaisesRegex(TargetNotAllowedError, "HTTPS"):
+                self.pipeline(dev_dns_bypass_enabled=True).run(
+                    target_url="http://external.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                    skip_dns_verification=True,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_bypass_still_rejects_private_external_resolution(self):
+        self.dns.addresses["private.example.com"] = ("10.0.0.8",)
+        with self.factory() as session:
+            with self.assertRaisesRegex(TargetNotAllowedError, "non-public"):
+                self.pipeline(dev_dns_bypass_enabled=True).run(
+                    target_url="https://private.example.com",
+                    scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                    authorized=True,
+                    persistence_session=session,
+                    skip_dns_verification=True,
+                )
+        self.assertEqual(self.external_executions, [])
+
+    def test_external_verification_fails_closed_without_persistence_session(self):
+        with self.assertRaisesRegex(TargetNotAllowedError, "persistence session"):
+            self.pipeline().run(
+                target_url="https://verified.example.com",
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=True,
+            )
+        self.assertEqual(self.external_executions, [])
+
+    def test_authorization_and_origin_path_checks_remain_authoritative(self):
+        with self.assertRaises(AuthorizationRequiredError):
+            self.pipeline(dev_dns_bypass_enabled=True).run(
+                target_url="https://verified.example.com",
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=False,
+                skip_dns_verification=True,
+            )
+        with self.assertRaisesRegex(InvalidTargetError, "without a path"):
+            self.pipeline(dev_dns_bypass_enabled=True).run(
+                target_url="https://verified.example.com/items",
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                authorized=True,
+                skip_dns_verification=True,
+            )
+        self.assertEqual(self.external_executions, [])
+
+    def test_environment_flag_defaults_off_and_requires_exact_true(self):
+        with patch.dict(
+            "os.environ",
+            {DEV_DNS_BYPASS_ENV: "false"},
+            clear=False,
+        ):
+            self.assertFalse(TestHarnessPipeline().dev_dns_bypass_enabled)
+        with patch.dict(
+            "os.environ",
+            {DEV_DNS_BYPASS_ENV: "true"},
+            clear=False,
+        ):
+            self.assertTrue(TestHarnessPipeline().dev_dns_bypass_enabled)
+
+
 class TestHarnessApiTests(unittest.TestCase):
 
     @classmethod
@@ -368,7 +638,50 @@ class TestHarnessApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("authorization", response.json()["detail"])
 
-    def test_generic_scenario_rejects_non_loopback_even_if_allowlisted(self):
+    def test_api_exposes_only_the_server_side_bypass_capability(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                pipeline = TestHarnessPipeline(
+                    mode="fixture",
+                    allowed_origins=[],
+                    dev_dns_bypass_enabled=enabled,
+                )
+                app.dependency_overrides[
+                    get_test_harness_pipeline
+                ] = lambda pipeline=pipeline: pipeline
+                try:
+                    response = self.client.get("/api/test-harness/config")
+                finally:
+                    app.dependency_overrides.pop(
+                        get_test_harness_pipeline,
+                        None,
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    response.json(),
+                    {"development_dns_bypass_enabled": enabled},
+                )
+
+    def test_api_rejects_requested_bypass_when_server_flag_is_disabled(self):
+        pipeline = TestHarnessPipeline(
+            mode="fixture",
+            allowed_origins=[],
+            dev_dns_bypass_enabled=False,
+        )
+        app.dependency_overrides[get_test_harness_pipeline] = lambda: pipeline
+        try:
+            response = self.post(
+                scenario=GENERIC_LOCAL_WEB_SCENARIO,
+                target_url="https://unverified.example.com",
+                skip_dns_verification=True,
+            )
+        finally:
+            app.dependency_overrides.pop(get_test_harness_pipeline, None)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("disabled", response.json()["detail"])
+
+    def test_generic_scenario_static_allowlist_does_not_replace_verification(self):
         pipeline = TestHarnessPipeline(
             mode="fixture",
             allowed_origins=["https://lab.internal"],
@@ -383,7 +696,7 @@ class TestHarnessApiTests(unittest.TestCase):
             app.dependency_overrides.pop(get_test_harness_pipeline, None)
 
         self.assertEqual(response.status_code, 403)
-        self.assertIn("loopback", response.json()["detail"])
+        self.assertIn("DNS ownership verification", response.json()["detail"])
 
     def test_generic_scenario_requires_an_origin_without_path(self):
         response = self.post(
@@ -696,8 +1009,10 @@ class GenericLocalWebHarnessApiTests(unittest.TestCase):
                 "finding_presentations",
                 "attack_flow",
                 "presentation_mode",
+                "development_dns_bypass_used",
             },
         )
+        self.assertFalse(self.body["development_dns_bypass_used"])
         self.assertEqual(self.body["overall_status"], "completed")
         self.assertEqual(self.body["presentation_mode"], "controlled_lab")
         self.assertEqual(len(self.body["finding_presentations"]), 5)

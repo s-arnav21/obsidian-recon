@@ -23,6 +23,7 @@ from app.services.generic_local_web_validation import (
     GenericLocalWebRun,
     TargetScopeError,
     execute_generic_local_web_validation,
+    execute_verified_external_web_validation,
     run_generic_local_web_validation,
 )
 from app.services.persistence import (
@@ -32,6 +33,14 @@ from app.services.persistence import (
     persist_validation_outputs,
     start_validation_run,
 )
+from app.scanning.scope import (
+    AuthorizedTarget,
+    ReconScopeError,
+    TargetVerificationRequiredError,
+    authorize_target,
+    normalize_origin,
+)
+from app.services.target_verification import TargetVerificationService
 from app.validation.dispatcher import apply_validation_result, dispatch
 
 
@@ -47,6 +56,7 @@ LOCAL_LAB_MODE = "local_lab"
 SUPPORTED_MODES = frozenset({FIXTURE_MODE, LOCAL_LAB_MODE})
 MODE_ENV = "TEST_HARNESS_MODE"
 ALLOWED_ORIGINS_ENV = "TEST_HARNESS_ALLOWED_ORIGINS"
+DEV_DNS_BYPASS_ENV = "ENABLE_DEV_DNS_BYPASS"
 
 
 class TestHarnessError(ValueError):
@@ -101,6 +111,7 @@ class LabAdapter(Protocol):
 LabAdapterFactory = Callable[[], LabAdapter]
 GenericScenarioRunner = Callable[[str], Dict[str, Any]]
 GenericScenarioExecutor = Callable[..., GenericLocalWebRun]
+VerifiedExternalScenarioExecutor = Callable[..., GenericLocalWebRun]
 
 
 def deterministic_fixture_result(finding: Finding) -> ValidationResult:
@@ -238,6 +249,11 @@ class TestHarnessPipeline:
         generic_scenario_executor: GenericScenarioExecutor = (
             execute_generic_local_web_validation
         ),
+        verified_external_scenario_executor: VerifiedExternalScenarioExecutor = (
+            execute_verified_external_web_validation
+        ),
+        target_verification_service: Optional[TargetVerificationService] = None,
+        dev_dns_bypass_enabled: Optional[bool] = None,
     ) -> None:
         if not callable(fixture_result_provider):
             raise TypeError("fixture_result_provider must be callable")
@@ -250,10 +266,30 @@ class TestHarnessPipeline:
             raise TypeError("generic_scenario_runner must be callable")
         if not callable(generic_scenario_executor):
             raise TypeError("generic_scenario_executor must be callable")
+        if not callable(verified_external_scenario_executor):
+            raise TypeError(
+                "verified_external_scenario_executor must be callable"
+            )
         self._dispatcher = dispatcher
         self._lab_adapter_factory = lab_adapter_factory
         self._generic_scenario_runner = generic_scenario_runner
         self._generic_scenario_executor = generic_scenario_executor
+        self._verified_external_scenario_executor = (
+            verified_external_scenario_executor
+        )
+        self._target_verification_service = (
+            target_verification_service or TargetVerificationService()
+        )
+        if (
+            dev_dns_bypass_enabled is not None
+            and type(dev_dns_bypass_enabled) is not bool
+        ):
+            raise TypeError("dev_dns_bypass_enabled must be a boolean")
+        self._dev_dns_bypass_enabled = (
+            os.getenv(DEV_DNS_BYPASS_ENV, "false").strip().lower() == "true"
+            if dev_dns_bypass_enabled is None
+            else dev_dns_bypass_enabled
+        )
         configured_mode = mode if mode is not None else os.getenv(
             MODE_ENV,
             FIXTURE_MODE,
@@ -268,6 +304,10 @@ class TestHarnessPipeline:
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def dev_dns_bypass_enabled(self) -> bool:
+        return self._dev_dns_bypass_enabled
 
     def _validate_mode(self) -> None:
         if self._mode not in SUPPORTED_MODES:
@@ -292,6 +332,51 @@ class TestHarnessPipeline:
         with adapter.session() as session:
             return self._dispatcher(finding, session)
 
+    def _authorize_generic_external_target(
+        self,
+        target: TargetContext,
+        persistence_session: Optional[Session],
+        *,
+        skip_dns_verification: bool,
+    ) -> tuple[Optional[AuthorizedTarget], bool]:
+        if _is_loopback_host(target.host):
+            return None, False
+        if persistence_session is None:
+            raise TargetNotAllowedError(
+                "external generic validation requires a persistence session "
+                "for DNS ownership verification"
+            )
+
+        try:
+            normalized = normalize_origin(target.origin)
+            bypass_used = (
+                self._dev_dns_bypass_enabled and skip_dns_verification
+            )
+            ownership_verified = bypass_used
+            if not ownership_verified:
+                ownership_verified = (
+                    self._target_verification_service.is_origin_verified(
+                        persistence_session,
+                        normalized.origin,
+                    )
+                )
+            authorized_target = authorize_target(
+                normalized.origin,
+                authorized=True,
+                ownership_verified=ownership_verified,
+                address_resolver=(
+                    self._target_verification_service.resolve_addresses
+                ),
+            )
+            return authorized_target, bypass_used
+        except TargetVerificationRequiredError:
+            raise TargetNotAllowedError(
+                "DNS ownership verification is required for this exact "
+                "external target origin"
+            ) from None
+        except ReconScopeError as exc:
+            raise TargetNotAllowedError(str(exc)) from exc
+
     def run(
         self,
         *,
@@ -299,6 +384,7 @@ class TestHarnessPipeline:
         scenario: str,
         authorized: bool,
         persistence_session: Optional[Session] = None,
+        skip_dns_verification: bool = False,
     ) -> Dict[str, object]:
         self._validate_mode()
         if authorized is not True:
@@ -310,18 +396,42 @@ class TestHarnessPipeline:
             raise UnsupportedScenarioError(
                 f"unsupported scenario {scenario!r}; supported: {supported}"
             )
+        if type(skip_dns_verification) is not bool:
+            raise TargetNotAllowedError(
+                "skip_dns_verification must be a boolean"
+            )
+        if skip_dns_verification and not self._dev_dns_bypass_enabled:
+            raise TargetNotAllowedError(
+                "development DNS ownership bypass is disabled on this server"
+            )
+        if (
+            skip_dns_verification
+            and scenario != GENERIC_LOCAL_WEB_SCENARIO
+        ):
+            raise TargetNotAllowedError(
+                "development DNS ownership bypass is available only for the "
+                "generic test-harness scenario"
+            )
 
         target = _parse_target(target_url)
+        verified_external_target = None
+        development_dns_bypass_used = False
         if scenario == GENERIC_LOCAL_WEB_SCENARIO:
-            if not _is_loopback_host(target.host):
-                raise TargetNotAllowedError(
-                    "generic local web validation accepts loopback targets only"
-                )
             if target.endpoint != "/":
                 raise InvalidTargetError(
                     "generic local web validation requires a target origin "
                     "without a path"
                 )
+            (
+                verified_external_target,
+                development_dns_bypass_used,
+            ) = self._authorize_generic_external_target(
+                target,
+                persistence_session,
+                skip_dns_verification=skip_dns_verification,
+            )
+            if verified_external_target is not None:
+                target = _parse_target(verified_external_target.origin)
         elif (
             not _is_loopback_host(target.host)
             and target.origin not in self._allowed_origins
@@ -350,11 +460,22 @@ class TestHarnessPipeline:
         try:
             if scenario == GENERIC_LOCAL_WEB_SCENARIO:
                 if persistence_session is None:
-                    return self._generic_scenario_runner(target.origin)
-                generic_run = self._generic_scenario_executor(
-                    target.origin,
-                    scan_id=scan_id,
-                )
+                    result = dict(self._generic_scenario_runner(target.origin))
+                    result["development_dns_bypass_used"] = False
+                    return result
+                if verified_external_target is None:
+                    generic_run = self._generic_scenario_executor(
+                        target.origin,
+                        scan_id=scan_id,
+                    )
+                else:
+                    generic_run = self._verified_external_scenario_executor(
+                        verified_external_target,
+                        scan_id=scan_id,
+                        address_resolver=(
+                            self._target_verification_service.resolve_addresses
+                        ),
+                    )
                 persist_validation_outputs(
                     persistence_session,
                     scan_id=scan_id,
@@ -377,7 +498,11 @@ class TestHarnessPipeline:
                         source="local_integration_fixture",
                     )],
                 )
-                return generic_run.to_dict()
+                result = generic_run.to_dict()
+                result["development_dns_bypass_used"] = (
+                    development_dns_bypass_used
+                )
+                return result
 
             return self._run_public_app_scenario(
                 target=target,

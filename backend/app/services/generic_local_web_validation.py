@@ -6,7 +6,7 @@ import hashlib
 import ipaddress
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from app.attack_chain.mitre_mapping import enrich_finding_model
 from app.models.attack_chain import AttackChain
 from app.models.finding import Finding, ValidationStatus
 from app.models.validation import ValidationResult
+from app.scanning.http_discovery import ScopedReconHttpClient
 from app.scanning.normalizer import (
     ExposedResourceScannerRecord,
     HttpScannerRecord,
@@ -26,6 +27,7 @@ from app.scanning.normalizer import (
     normalize_reflected_xss_record,
     normalize_ssrf_record,
 )
+from app.scanning.scope import AuthorizedTarget, ReconScopeError
 from app.validation.dispatcher import apply_validation_result, dispatch
 
 
@@ -38,6 +40,31 @@ class TargetScopeError(ValueError):
 
 class LocalTargetConnectionError(ConnectionError):
     """Raised when the approved local fixture cannot be reached safely."""
+
+
+@dataclass(frozen=True)
+class _ReachabilityPolicy:
+    endpoint: str
+    source: str
+    template_id: str
+    evidence_status_key: str
+    required_status: Optional[int] = None
+
+
+_LOCAL_FIXTURE_REACHABILITY = _ReachabilityPolicy(
+    endpoint="/health",
+    source="local_integration_fixture",
+    template_id="local-fixture-health-check",
+    evidence_status_key="health_status",
+    required_status=200,
+)
+
+_EXTERNAL_REACHABILITY = _ReachabilityPolicy(
+    endpoint="/",
+    source="generic_external_validation",
+    template_id="generic-web-reachability",
+    evidence_status_key="response_status",
+)
 
 
 @dataclass(frozen=True)
@@ -290,16 +317,33 @@ def _scanner_records(
 
 def execute_local_multi_validator_pipeline(
     origin: str,
-    client: ScopedLoopbackHttpClient,
+    client: ScopedLoopbackHttpClient | ScopedReconHttpClient,
     *,
     scan_id: Optional[str] = None,
+    reachability_policy: _ReachabilityPolicy = _LOCAL_FIXTURE_REACHABILITY,
 ) -> GenericLocalWebRun:
     """Run the existing pipeline and retain typed artifacts for persistence."""
-    if client.approved_origin != origin.rstrip("/"):
+    approved_origin = getattr(client, "approved_origin", None)
+    if approved_origin is None:
+        approved_origin = getattr(getattr(client, "target", None), "origin", None)
+    if approved_origin != origin.rstrip("/"):
         raise TargetScopeError("pipeline origin must match the scoped client")
 
-    health_response = client.get(f"{origin}/health")
-    if health_response.status_code != 200:
+    reachability_response = client.get(
+        f"{origin}{reachability_policy.endpoint}"
+    )
+    reachability_status = getattr(reachability_response, "status_code", None)
+    if isinstance(reachability_status, bool) or not isinstance(
+        reachability_status,
+        int,
+    ):
+        raise LocalTargetConnectionError(
+            "authorized target returned an invalid HTTP response"
+        )
+    if (
+        reachability_policy.required_status is not None
+        and reachability_status != reachability_policy.required_status
+    ):
         raise LocalTargetConnectionError(
             "authorized local target failed its fixture health check"
         )
@@ -351,13 +395,15 @@ def execute_local_multi_validator_pipeline(
         host=parsed_origin.hostname or "127.0.0.1",
         port=parsed_origin.port,
         protocol=parsed_origin.scheme,
-        endpoint="/health",
-        source="local_integration_fixture",
-        template_id="local-fixture-health-check",
+        endpoint=reachability_policy.endpoint,
+        source=reachability_policy.source,
+        template_id=reachability_policy.template_id,
         vulnerability_type="service_scan",
         validation_status=ValidationStatus.CONFIRMED,
         validation_confidence=1.0,
-        evidence={"health_status": health_response.status_code},
+        evidence={
+            reachability_policy.evidence_status_key: reachability_status,
+        },
     )
     chains = build_attack_paths([reachability, *enriched_findings])
     return GenericLocalWebRun(
@@ -398,6 +444,40 @@ def execute_generic_local_web_validation(
     except httpx.RequestError as exc:
         raise LocalTargetConnectionError(
             "authorized local target is unreachable"
+        ) from exc
+
+
+def execute_verified_external_web_validation(
+    target: AuthorizedTarget,
+    *,
+    scan_id: Optional[str] = None,
+    address_resolver: Optional[Callable[[str], Sequence[str]]] = None,
+) -> GenericLocalWebRun:
+    """Execute the fixed generic scenario through the canonical scoped client."""
+    if not isinstance(target, AuthorizedTarget):
+        raise TypeError("target must be an AuthorizedTarget")
+    if target.scheme != "https" or not target.resolved_addresses:
+        raise TargetScopeError(
+            "external validation requires an authorized HTTPS target"
+        )
+    try:
+        with ScopedReconHttpClient(
+            target,
+            address_resolver=address_resolver,
+        ) as client:
+            return execute_local_multi_validator_pipeline(
+                target.origin,
+                client,
+                scan_id=scan_id,
+                reachability_policy=_EXTERNAL_REACHABILITY,
+            )
+    except ReconScopeError as exc:
+        raise TargetScopeError(str(exc)) from exc
+    except LocalTargetConnectionError:
+        raise
+    except httpx.RequestError as exc:
+        raise LocalTargetConnectionError(
+            "authorized external target is unreachable"
         ) from exc
 
 

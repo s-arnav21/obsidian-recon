@@ -83,6 +83,16 @@ class PrototypeStaticUiTests(unittest.TestCase):
         self.assertIn('id="verification-name"', html)
         self.assertIn("*.netlify.app", html)
         self.assertIn("sibling subdomains", html)
+        self.assertIn('id="dev-dns-bypass-control"', html)
+        self.assertIn('id="skip-dns-verification"', html)
+        self.assertIn("DEVELOPMENT ONLY", html)
+        self.assertIn(
+            "DNS OWNERSHIP CHECK BYPASSED — DEVELOPMENT TEST ONLY",
+            html,
+        )
+        bypass_input = html.split('id="skip-dns-verification"', 1)[1]
+        self.assertIn("disabled", bypass_input.split(">", 1)[0])
+        self.assertNotIn("checked", bypass_input.split(">", 1)[0])
 
     def test_javascript_wires_real_scan_harness_retrieval_and_summary(self):
         javascript = (STATIC_DIR / "app.js").read_text()
@@ -101,6 +111,12 @@ class PrototypeStaticUiTests(unittest.TestCase):
             "target_verification_required",
             "function renderTargetVerification(verification)",
             '/api/target-verifications/${encodeURIComponent(activeVerificationId)}/verify',
+            'requestJson("/api/test-harness/config")',
+            "function setDevelopmentDnsBypassAvailability(enabled)",
+            "checkbox.checked = false",
+            "checkbox.disabled = !enabled",
+            "control.hidden = !enabled",
+            'skip_dns_verification: $("#skip-dns-verification").checked',
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, javascript)
